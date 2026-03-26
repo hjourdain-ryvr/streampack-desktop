@@ -27,7 +27,7 @@
 # =============================================================================
 
 # ── Versions (pin for reproducible builds) ────────────────────────────────────
-ARG FFMPEG_VERSION=6.1.1
+ARG FFMPEG_VERSION=6.1.4
 ARG X264_VERSION=stable
 ARG NASM_VERSION=2.16.01
 
