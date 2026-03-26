@@ -1,0 +1,29 @@
+# Flutter generated platform directories — created by: flutter create --platforms=linux,windows .
+# Re-run setup.sh / setup.ps1 after flutter create to restore lib/ from lib.streampack/
+streampack_flutter/linux/
+streampack_flutter/windows/
+streampack_flutter/macos/
+streampack_flutter/web/
+streampack_flutter/android/
+streampack_flutter/ios/
+
+# Flutter build output
+streampack_flutter/build/
+streampack_flutter/.dart_tool/
+streampack_flutter/.flutter-plugins
+streampack_flutter/.flutter-plugins-dependencies
+
+# Flutter lib/ — populated by setup.sh from lib.streampack/ (source of truth)
+streampack_flutter/lib/
+
+# Built ffmpeg binaries — produced by: bash build-ffmpeg.sh
+vendor/
+
+# Docker build cache
+.docker/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~

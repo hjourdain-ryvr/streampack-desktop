@@ -1,0 +1,31 @@
+name: streampack
+description: HLS + DASH encoder and validator desktop app
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # File / directory picker (native OS dialog)
+  file_picker: ^8.0.0
+
+  # XML parsing for DASH .mpd validation
+  xml: ^6.5.0
+
+  # State management
+  provider: ^6.1.0
+
+  # Window title bar / size control on desktop
+  window_manager: ^0.3.9
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
