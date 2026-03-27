@@ -135,7 +135,7 @@ class _EncoderTabState extends State<EncoderTab> {
 
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       SizedBox(width: 380, child: Container(
-        decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xFF252a33)))),
+        decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xFF2e3848)))),
         child: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -151,10 +151,10 @@ class _EncoderTabState extends State<EncoderTab> {
             if (_srcWidth > 0) ...[
               const SizedBox(height: 4),
               Row(children: [
-                const Icon(Icons.info_outline, size: 11, color: Color(0xFF4a5168)),
+                const Icon(Icons.info_outline, size: 11, color: Color(0xFF9aa3b8)),
                 const SizedBox(width: 4),
                 Text('${l.encSourceSize}: ${_srcWidth}×$_srcHeight',
-                    style: const TextStyle(color: Color(0xFF4a5168), fontSize: 10, fontFamily: 'monospace')),
+                    style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
               ]),
             ],
             const SizedBox(height: 16),
@@ -214,11 +214,11 @@ class _EncoderTabState extends State<EncoderTab> {
               const SizedBox(width: 10),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(color: const Color(0xFF181c22),
-                    border: Border.all(color: const Color(0xFF2e3440)),
+                decoration: BoxDecoration(color: const Color(0xFF20252f),
+                    border: Border.all(color: const Color(0xFF4d5870)),
                     borderRadius: BorderRadius.circular(999)),
                 child: Text('${runner.jobs.length}',
-                    style: const TextStyle(color: Color(0xFF8a92a8), fontSize: 10, fontFamily: 'monospace')),
+                    style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 10, fontFamily: 'monospace')),
               ),
             ])),
           Expanded(child: runner.jobs.isEmpty
@@ -251,7 +251,7 @@ class _PathField extends StatelessWidget {
       required this.onBrowse, required this.browseIcon});
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    Text(label, style: const TextStyle(color: Color(0xFF8a92a8), fontSize: 11, fontWeight: FontWeight.w600)),
+    Text(label, style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600)),
     const SizedBox(height: 5),
     Row(children: [
       Expanded(child: TextField(controller: controller,
@@ -260,8 +260,8 @@ class _PathField extends StatelessWidget {
       const SizedBox(width: 6),
       SizedBox(height: 44, child: OutlinedButton(
           onPressed: onBrowse,
-          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF8a92a8),
-              side: const BorderSide(color: Color(0xFF2e3440)),
+          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFb8bfcf),
+              side: const BorderSide(color: Color(0xFF4d5870)),
               padding: const EdgeInsets.symmetric(horizontal: 12),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
           child: Icon(browseIcon, size: 16))),
@@ -277,8 +277,8 @@ class _FormatToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: BoxDecoration(color: const Color(0xFF181c22),
-          border: Border.all(color: const Color(0xFF252a33)), borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(color: const Color(0xFF20252f),
+          border: Border.all(color: const Color(0xFF2e3848)), borderRadius: BorderRadius.circular(8)),
       padding: const EdgeInsets.all(3),
       child: Row(children: EncodeFormat.values.map((fmt) {
         final sel = fmt == value;
@@ -289,7 +289,7 @@ class _FormatToggle extends StatelessWidget {
             decoration: BoxDecoration(color: sel ? const Color(0xFF00d4aa) : Colors.transparent,
                 borderRadius: BorderRadius.circular(5)),
             alignment: Alignment.center,
-            child: Text(lbl, style: TextStyle(color: sel ? const Color(0xFF0a0c0f) : const Color(0xFF8a92a8),
+            child: Text(lbl, style: TextStyle(color: sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
                 fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)))));
       }).toList()),
     );
@@ -305,8 +305,8 @@ class _QualityToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: BoxDecoration(color: const Color(0xFF181c22),
-          border: Border.all(color: const Color(0xFF252a33)), borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(color: const Color(0xFF20252f),
+          border: Border.all(color: const Color(0xFF2e3848)), borderRadius: BorderRadius.circular(8)),
       padding: const EdgeInsets.all(3),
       child: Row(children: EncodeQuality.values.map((q) {
         final sel = q == value;
@@ -318,7 +318,7 @@ class _QualityToggle extends StatelessWidget {
             decoration: BoxDecoration(color: sel ? const Color(0xFF00d4aa) : Colors.transparent,
                 borderRadius: BorderRadius.circular(5)),
             alignment: Alignment.center,
-            child: Text(lbl, style: TextStyle(color: sel ? const Color(0xFF0a0c0f) : const Color(0xFF8a92a8),
+            child: Text(lbl, style: TextStyle(color: sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
                 fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8))))));
       }).toList()),
     );
@@ -347,21 +347,21 @@ class _ResolutionGrid extends StatelessWidget {
       itemBuilder: (_, i) {
         final p = kPresets[i], isSel = selected.contains(i), isDis = _wouldUpscale(p);
         final accent = Theme.of(context).colorScheme.primary;
-        const dBg = Color(0xFF13161b), dFg = Color(0xFF2e3440);
+        const dBg = Color(0xFF181d24), dFg = Color(0xFF4d5870);
         return Tooltip(message: isDis ? upscaleTooltipFn(srcHeight) : '',
           child: InkWell(onTap: isDis ? null : () => onToggle(i), borderRadius: BorderRadius.circular(8),
             child: AnimatedContainer(duration: const Duration(milliseconds: 150),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: isDis ? dBg : isSel ? accent.withOpacity(0.1) : const Color(0xFF181c22),
-                border: Border.all(color: isDis ? dFg : isSel ? accent : const Color(0xFF2e3440)),
+                color: isDis ? dBg : isSel ? accent.withOpacity(0.1) : const Color(0xFF20252f),
+                border: Border.all(color: isDis ? dFg : isSel ? accent : const Color(0xFF4d5870)),
                 borderRadius: BorderRadius.circular(8)),
               child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
                   Text(p.label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
                       color: isDis ? dFg : isSel ? accent : const Color(0xFFe8eaf0))),
                   Text(isDis ? '${p.width}×${p.height} $upscaleLabel' : p.videoBitrate,
-                      style: TextStyle(fontSize: 9, color: isDis ? dFg : const Color(0xFF4a5168), fontFamily: 'monospace')),
+                      style: TextStyle(fontSize: 9, color: isDis ? dFg : const Color(0xFF9aa3b8), fontFamily: 'monospace')),
                 ]),
                 if (isSel && !isDis) Icon(Icons.check_circle, color: accent, size: 14),
                 if (isDis) Icon(Icons.block, color: dFg, size: 12),
@@ -393,10 +393,10 @@ class _NvencStatus extends StatelessWidget {
   const _NvencStatus({required this.available});
   Widget _dot(String label, Color litColor, bool lit) => Row(children: [
     Container(width: 7, height: 7, decoration: BoxDecoration(shape: BoxShape.circle,
-        color: lit ? litColor : const Color(0xFF2e3440),
+        color: lit ? litColor : const Color(0xFF4d5870),
         boxShadow: lit ? [BoxShadow(color: litColor.withOpacity(0.5), blurRadius: 4)] : null)),
     const SizedBox(width: 4),
-    Text(label, style: TextStyle(color: lit ? litColor : const Color(0xFF4a5168), fontSize: 10, fontFamily: 'monospace')),
+    Text(label, style: TextStyle(color: lit ? litColor : const Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
   ]);
   @override
   Widget build(BuildContext context) {
@@ -416,8 +416,8 @@ class _EmptyState extends StatelessWidget {
   const _EmptyState({required this.icon, required this.message});
   @override
   Widget build(BuildContext context) => Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-    Icon(icon, size: 40, color: const Color(0xFF252a33)),
+    Icon(icon, size: 40, color: const Color(0xFF2e3848)),
     const SizedBox(height: 12),
-    Text(message, style: const TextStyle(color: Color(0xFF4a5168), fontSize: 11, fontFamily: 'monospace')),
+    Text(message, style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11, fontFamily: 'monospace')),
   ]));
 }

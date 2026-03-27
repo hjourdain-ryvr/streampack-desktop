@@ -155,19 +155,19 @@ class _VariantTile extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
-              color: const Color(0xFF181c22),
-              border: Border.all(color: const Color(0xFF2e3440)),
+              color: const Color(0xFF20252f),
+              border: Border.all(color: const Color(0xFF4d5870)),
               borderRadius: BorderRadius.circular(3),
             ),
             child: Text(variant.resolution,
                 style: const TextStyle(
-                    color: Color(0xFF8a92a8),
+                    color: Color(0xFFb8bfcf),
                     fontSize: 9, fontFamily: 'monospace')),
           ),
           const SizedBox(width: 8),
           Text(variant.uri,
               style: const TextStyle(
-                  color: Color(0xFF8a92a8), fontSize: 10, fontFamily: 'monospace')),
+                  color: Color(0xFFb8bfcf), fontSize: 10, fontFamily: 'monospace')),
           const Spacer(),
           Icon(Icons.circle, color: color, size: 8),
         ]),

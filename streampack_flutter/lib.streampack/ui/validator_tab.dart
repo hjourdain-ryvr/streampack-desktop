@@ -71,7 +71,7 @@ class _ValidatorTabState extends State<ValidatorTab> {
 
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       SizedBox(width: 320, child: Container(
-        decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xFF252a33)))),
+        decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xFF2e3848)))),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Padding(padding: const EdgeInsets.all(24), child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -89,8 +89,8 @@ class _ValidatorTabState extends State<ValidatorTab> {
                 SizedBox(height: 44, child: OutlinedButton(
                   onPressed: _pickFile,
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF8a92a8),
-                    side: const BorderSide(color: Color(0xFF2e3440)),
+                    foregroundColor: const Color(0xFFb8bfcf),
+                    side: const BorderSide(color: Color(0xFF4d5870)),
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                   child: const Icon(Icons.folder_outlined, size: 16))),
@@ -139,15 +139,15 @@ class _ValidatorTabState extends State<ValidatorTab> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(_history[_activeIdx].target,
-                    style: const TextStyle(color: Color(0xFF4a5168), fontSize: 10, fontFamily: 'monospace')),
+                    style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
                 const SizedBox(height: 12),
                 ValidationReport(result: _history[_activeIdx].result),
               ]))
           : Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const Icon(Icons.rule_outlined, size: 40, color: Color(0xFF252a33)),
+              const Icon(Icons.rule_outlined, size: 40, color: Color(0xFF2e3848)),
               const SizedBox(height: 12),
               Text(l.valEmptyPrompt,
-                  style: const TextStyle(color: Color(0xFF4a5168), fontSize: 11, fontFamily: 'monospace')),
+                  style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11, fontFamily: 'monospace')),
             ]))),
     ]);
   }

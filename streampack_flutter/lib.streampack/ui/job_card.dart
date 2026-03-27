@@ -28,7 +28,7 @@ class _JobCardState extends State<JobCard> {
       JobStatus.done       => accent.withOpacity(0.3),
       JobStatus.error      => red.withOpacity(0.3),
       JobStatus.validating => yellow.withOpacity(0.25),
-      _                    => const Color(0xFF252a33),
+      _                    => const Color(0xFF2e3848),
     };
 
     final canDismiss = job.status == JobStatus.done ||
@@ -44,7 +44,7 @@ class _JobCardState extends State<JobCard> {
     };
 
     final statusColor = switch (job.status) {
-      JobStatus.queued     => const Color(0xFF4a5168),
+      JobStatus.queued     => const Color(0xFF9aa3b8),
       JobStatus.running    => const Color(0xFF00d4aa),
       JobStatus.validating => const Color(0xFFf5c542),
       JobStatus.done       => const Color(0xFF00d4aa),
@@ -67,7 +67,7 @@ class _JobCardState extends State<JobCard> {
               Text(job.inputBasename,
                   style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
               Text('→ ${job.hlsOutputDir}',
-                  style: const TextStyle(color: Color(0xFF8a92a8), fontSize: 10, fontFamily: 'monospace'),
+                  style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 10, fontFamily: 'monospace'),
                   overflow: TextOverflow.ellipsis),
             ])),
           ]),
@@ -92,7 +92,7 @@ class _JobCardState extends State<JobCard> {
             child: LinearProgressIndicator(
               value: job.status == JobStatus.validating ? null : job.progress,
               minHeight: 5,
-              backgroundColor: const Color(0xFF181c22),
+              backgroundColor: const Color(0xFF20252f),
               valueColor: AlwaysStoppedAnimation(
                   job.status == JobStatus.validating ? yellow : accent),
             )),
@@ -113,10 +113,10 @@ class _JobCardState extends State<JobCard> {
               job.status == JobStatus.validating
                   ? l.jobValidating
                   : '${(job.progress * 100).toStringAsFixed(0)}%',
-              style: const TextStyle(color: Color(0xFF4a5168), fontSize: 10, fontFamily: 'monospace')),
+              style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
             const SizedBox(width: 8),
             Text(job.elapsedLabel,
-                style: const TextStyle(color: Color(0xFF4a5168), fontSize: 10, fontFamily: 'monospace')),
+                style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
             const Spacer(),
             if (job.status == JobStatus.queued || job.status == JobStatus.running)
               TextButton(
@@ -170,10 +170,10 @@ class _JobCardState extends State<JobCard> {
               child: Padding(padding: const EdgeInsets.symmetric(vertical: 4),
                 child: Row(children: [
                   Icon(_validationExpanded ? Icons.expand_less : Icons.expand_more,
-                      size: 14, color: const Color(0xFF4a5168)),
+                      size: 14, color: const Color(0xFF9aa3b8)),
                   const SizedBox(width: 4),
                   Text(l.jobValidationReport,
-                      style: const TextStyle(color: Color(0xFF8a92a8), fontSize: 10, fontWeight: FontWeight.w600)),
+                      style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 10, fontWeight: FontWeight.w600)),
                 ])),
             ),
             if (_validationExpanded) ...[
@@ -194,7 +194,7 @@ class _JobCardState extends State<JobCard> {
           child: InkWell(onTap: () => widget.runner.remove(job),
             borderRadius: BorderRadius.circular(999),
             child: const Padding(padding: EdgeInsets.all(4),
-              child: Icon(Icons.close, size: 13, color: Color(0xFF4a5168)))))),
+              child: Icon(Icons.close, size: 13, color: Color(0xFF9aa3b8)))))),
     ]);
   }
 }
@@ -218,9 +218,9 @@ class _Badge extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-    decoration: BoxDecoration(color: color ?? const Color(0xFF181c22),
-        border: Border.all(color: borderColor ?? const Color(0xFF2e3440)),
+    decoration: BoxDecoration(color: color ?? const Color(0xFF20252f),
+        border: Border.all(color: borderColor ?? const Color(0xFF4d5870)),
         borderRadius: BorderRadius.circular(4)),
     child: Text(label, style: TextStyle(
-        color: textColor ?? const Color(0xFF4a5168), fontSize: 9, fontFamily: 'monospace')));
+        color: textColor ?? const Color(0xFF9aa3b8), fontSize: 9, fontFamily: 'monospace')));
 }

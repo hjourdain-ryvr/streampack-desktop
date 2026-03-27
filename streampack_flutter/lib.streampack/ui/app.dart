@@ -19,7 +19,7 @@ void _showAbout(BuildContext context) {
       backgroundColor: const Color(0xFF111418),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0xFF252a33)),
+        side: const BorderSide(color: Color(0xFF2e3848)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -49,18 +49,18 @@ void _showAbout(BuildContext context) {
             const SizedBox(height: 16),
             Text('Version $kAppVersion',
                 style: const TextStyle(
-                    color: Color(0xFF8a92a8), fontSize: 12, fontFamily: 'monospace')),
+                    color: Color(0xFFb8bfcf), fontSize: 12, fontFamily: 'monospace')),
             const SizedBox(height: 24),
-            const Divider(color: Color(0xFF252a33)),
+            const Divider(color: Color(0xFF2e3848)),
             const SizedBox(height: 16),
             Text(
               l10n.aboutDescription,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFF8a92a8), fontSize: 12, height: 1.6),
+              style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 12, height: 1.6),
             ),
             const SizedBox(height: 20),
             const Text(kAppCopyright,
-                style: TextStyle(color: Color(0xFF4a5168), fontSize: 11)),
+                style: TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
             const SizedBox(height: 24),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
@@ -88,7 +88,7 @@ void _showSettings(BuildContext context) {
           backgroundColor: const Color(0xFF111418),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xFF252a33)),
+            side: const BorderSide(color: Color(0xFF2e3848)),
           ),
           child: Padding(
             padding: const EdgeInsets.all(32),
@@ -101,7 +101,7 @@ void _showSettings(BuildContext context) {
                         color: Color(0xFFe8eaf0),
                         fontSize: 16, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 24),
-                const Divider(color: Color(0xFF252a33)),
+                const Divider(color: Color(0xFF2e3848)),
                 const SizedBox(height: 20),
 
                 // Language section
@@ -125,7 +125,7 @@ void _showSettings(BuildContext context) {
                           border: Border.all(
                             color: lang == language
                                 ? accent
-                                : const Color(0xFF4a5168),
+                                : const Color(0xFF9aa3b8),
                             width: lang == language ? 4 : 1.5,
                           ),
                           color: const Color(0xFF111418),
@@ -136,7 +136,7 @@ void _showSettings(BuildContext context) {
                           style: TextStyle(
                               color: lang == language
                                   ? const Color(0xFFe8eaf0)
-                                  : const Color(0xFF8a92a8),
+                                  : const Color(0xFFb8bfcf),
                               fontSize: 13,
                               fontWeight: lang == language
                                   ? FontWeight.w600
@@ -182,10 +182,10 @@ class StreamPackApp extends StatelessWidget {
   ThemeData _buildTheme() {
     const bg       = Color(0xFF0a0c0f);
     const surface  = Color(0xFF111418);
-    const surface2 = Color(0xFF181c22);
-    const border   = Color(0xFF252a33);
+    const surface2 = Color(0xFF20252f);
+    const border   = Color(0xFF2e3848);
     const fg       = Color(0xFFe8eaf0);
-    const fg2      = Color(0xFF8a92a8);
+    const fg2      = Color(0xFFb8bfcf);
     const accent   = Color(0xFF00d4aa);
     const red      = Color(0xFFff4f6a);
     const yellow   = Color(0xFFf5c542);
@@ -225,8 +225,15 @@ class StreamPackApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           borderSide: const BorderSide(color: accent, width: 1.5),
         ),
-        hintStyle: const TextStyle(color: Color(0xFF4a5168), fontFamily: 'monospace'),
+        hintStyle: const TextStyle(color: Color(0xFF6b7589), fontFamily: 'monospace'),
         labelStyle: const TextStyle(color: fg2),
+      ),
+      sliderTheme: SliderThemeData(
+        inactiveTrackColor: const Color(0xFF2e3848),
+        thumbColor: accent,
+        activeTrackColor: accent,
+        overlayColor: accent.withOpacity(0.12),
+        tickMarkShape: SliderTickMarkShape.noTickMark,
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
@@ -346,12 +353,12 @@ class _ShellState extends State<_Shell>
         ),
         actions: [
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, size: 18, color: Color(0xFF4a5168)),
+            icon: const Icon(Icons.more_vert, size: 18, color: Color(0xFF9aa3b8)),
             tooltip: '',
-            color: const Color(0xFF181c22),
+            color: const Color(0xFF20252f),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
-              side: const BorderSide(color: Color(0xFF252a33)),
+              side: const BorderSide(color: Color(0xFF2e3848)),
             ),
             onSelected: (value) {
               if (value == 'settings') _showSettings(context);
@@ -362,7 +369,7 @@ class _ShellState extends State<_Shell>
                 value: 'settings',
                 child: Row(children: [
                   const Icon(Icons.settings_outlined,
-                      size: 15, color: Color(0xFF8a92a8)),
+                      size: 15, color: Color(0xFFb8bfcf)),
                   const SizedBox(width: 10),
                   Text(l10n.menuSettings,
                       style: const TextStyle(
@@ -374,7 +381,7 @@ class _ShellState extends State<_Shell>
                 value: 'about',
                 child: Row(children: [
                   const Icon(Icons.info_outline,
-                      size: 15, color: Color(0xFF8a92a8)),
+                      size: 15, color: Color(0xFFb8bfcf)),
                   const SizedBox(width: 10),
                   Text(l10n.menuAbout,
                       style: const TextStyle(
