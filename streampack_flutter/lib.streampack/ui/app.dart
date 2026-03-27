@@ -5,7 +5,7 @@ import '../l10n.dart';
 import 'encoder_tab.dart';
 import 'validator_tab.dart';
 
-const kAppVersion   = '1.0.0';
+const kAppVersion   = '1.1.0';
 const kAppCopyright = '© 2026 Hervé Jourdain — hjourdain@ryvrtech.com';
 
 // ── About dialog ──────────────────────────────────────────────────────────────
