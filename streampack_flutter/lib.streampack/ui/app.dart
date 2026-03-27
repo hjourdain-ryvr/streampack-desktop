@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import '../main.dart' show repaintAfterFocus;
+import '../l10n.dart';
 import 'encoder_tab.dart';
 import 'validator_tab.dart';
 
-const kAppVersion = '1.0.0';
+const kAppVersion   = '1.0.0';
 const kAppCopyright = '© 2026 Hervé Jourdain — hjourdain@ryvrtech.com';
+
+// ── About dialog ──────────────────────────────────────────────────────────────
 
 void _showAbout(BuildContext context) {
   final accent = Theme.of(context).colorScheme.primary;
+  final l10n   = context.l10n;
   showDialog(
     context: context,
     builder: (ctx) => Dialog(
@@ -22,7 +26,6 @@ void _showAbout(BuildContext context) {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Logo
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -50,21 +53,19 @@ void _showAbout(BuildContext context) {
             const SizedBox(height: 24),
             const Divider(color: Color(0xFF252a33)),
             const SizedBox(height: 16),
-            const Text(
-              'HLS & DASH adaptive streaming encoder\n'
-              'for Linux and Windows.',
+            Text(
+              l10n.aboutDescription,
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF8a92a8), fontSize: 12, height: 1.6),
+              style: const TextStyle(color: Color(0xFF8a92a8), fontSize: 12, height: 1.6),
             ),
             const SizedBox(height: 20),
-            Text(kAppCopyright,
-                style: const TextStyle(
-                    color: Color(0xFF4a5168), fontSize: 11)),
+            const Text(kAppCopyright,
+                style: TextStyle(color: Color(0xFF4a5168), fontSize: 11)),
             const SizedBox(height: 24),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
               style: TextButton.styleFrom(foregroundColor: accent),
-              child: const Text('Close'),
+              child: Text(l10n.aboutClose),
             ),
           ],
         ),
@@ -72,6 +73,9 @@ void _showAbout(BuildContext context) {
     ),
   );
 }
+
+
+// ── App root ──────────────────────────────────────────────────────────────────
 
 class StreamPackApp extends StatelessWidget {
   const StreamPackApp({super.key});
@@ -81,7 +85,6 @@ class StreamPackApp extends StatelessWidget {
     return MaterialApp(
       title: 'StreamPack',
       debugShowCheckedModeBanner: false,
-      // Match scaffold background — prevents GTK surface bleed-through
       color: const Color(0xFF0a0c0f),
       theme: _buildTheme(),
       home: const _Shell(),
@@ -161,9 +164,10 @@ class StreamPackApp extends StatelessWidget {
   }
 }
 
+// ── Shell ─────────────────────────────────────────────────────────────────────
+
 class _Shell extends StatefulWidget {
   const _Shell();
-
   @override
   State<_Shell> createState() => _ShellState();
 }
@@ -190,20 +194,21 @@ class _ShellState extends State<_Shell>
       }
     });
     windowManager.addListener(this);
-    // Window reveal is handled by waitUntilReadyToShow in main.dart
+    languageNotifier.addListener(_onLanguageChanged);
   }
+
+  void _onLanguageChanged() => setState(() {});
 
   @override
   void dispose() {
+    languageNotifier.removeListener(_onLanguageChanged);
     windowManager.removeListener(this);
     _tabs.dispose();
     super.dispose();
   }
 
   // ── WindowListener ────────────────────────────────────────────────────────
-  @override
-  void onWindowFocus() => repaintAfterFocus();
-
+  @override void onWindowFocus() => repaintAfterFocus();
   @override void onWindowBlur() {}
   @override void onWindowMaximize() {}
   @override void onWindowUnmaximize() {}
@@ -224,9 +229,9 @@ class _ShellState extends State<_Shell>
   Widget build(BuildContext context) {
     final theme  = Theme.of(context);
     final accent = theme.colorScheme.primary;
+    final l10n   = context.l10n;
 
     return Scaffold(
-      // Explicit background on Scaffold prevents transparent frames
       backgroundColor: const Color(0xFF0a0c0f),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0a0c0f),
@@ -236,10 +241,7 @@ class _ShellState extends State<_Shell>
           children: [
             ClipPath(
               clipper: _PlayClipper(),
-              child: Container(
-                width: 28, height: 28,
-                color: accent,
-              ),
+              child: Container(width: 28, height: 28, color: accent),
             ),
             const SizedBox(width: 12),
             RichText(
@@ -248,8 +250,7 @@ class _ShellState extends State<_Shell>
                 children: [
                   const TextSpan(text: 'Stream',
                       style: TextStyle(color: Color(0xFFe8eaf0))),
-                  TextSpan(text: 'Pack',
-                      style: TextStyle(color: accent)),
+                  TextSpan(text: 'Pack', style: TextStyle(color: accent)),
                 ],
               ),
             ),
@@ -266,16 +267,14 @@ class _ShellState extends State<_Shell>
         ],
         bottom: TabBar(
           controller: _tabs,
-          tabs: const [
-            Tab(text: 'ENCODER'),
-            Tab(text: 'VALIDATOR'),
+          tabs: [
+            Tab(text: l10n.tabEncoder),
+            Tab(text: l10n.tabValidator),
           ],
           labelStyle: const TextStyle(
               fontWeight: FontWeight.w700, letterSpacing: 1.5, fontSize: 11),
         ),
       ),
-      // ColoredBox ensures the background is always opaque before tab content
-      // paints — prevents accent color or transparency showing through on startup.
       body: ColoredBox(
         color: const Color(0xFF0a0c0f),
         child: IndexedStack(
