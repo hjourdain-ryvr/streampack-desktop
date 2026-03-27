@@ -74,6 +74,94 @@ void _showAbout(BuildContext context) {
   );
 }
 
+// ── Settings dialog ───────────────────────────────────────────────────────────
+
+void _showSettings(BuildContext context) {
+  final accent = Theme.of(context).colorScheme.primary;
+  showDialog(
+    context: context,
+    builder: (ctx) => ValueListenableBuilder<AppLanguage>(
+      valueListenable: languageNotifier,
+      builder: (ctx, lang, _) {
+        final l10n = AppLocalizations(lang);
+        return Dialog(
+          backgroundColor: const Color(0xFF111418),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Color(0xFF252a33)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l10n.settingsTitle,
+                    style: const TextStyle(
+                        color: Color(0xFFe8eaf0),
+                        fontSize: 16, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 24),
+                const Divider(color: Color(0xFF252a33)),
+                const SizedBox(height: 20),
+
+                // Language section
+                Text(l10n.settingsLanguage.toUpperCase(),
+                    style: const TextStyle(
+                        color: Color(0xFF00d4aa),
+                        fontSize: 9, fontWeight: FontWeight.w600,
+                        letterSpacing: 1.5, fontFamily: 'monospace')),
+                const SizedBox(height: 12),
+                ...AppLanguage.values.map((language) => InkWell(
+                  onTap: () => languageNotifier.value = language,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                    child: Row(children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        width: 14, height: 14,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: lang == language
+                                ? accent
+                                : const Color(0xFF4a5168),
+                            width: lang == language ? 4 : 1.5,
+                          ),
+                          color: const Color(0xFF111418),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(language.label,
+                          style: TextStyle(
+                              color: lang == language
+                                  ? const Color(0xFFe8eaf0)
+                                  : const Color(0xFF8a92a8),
+                              fontSize: 13,
+                              fontWeight: lang == language
+                                  ? FontWeight.w600
+                                  : FontWeight.normal)),
+                    ]),
+                  ),
+                )),
+
+                const SizedBox(height: 24),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: TextButton.styleFrom(foregroundColor: accent),
+                    child: Text(l10n.settingsClose),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
 
 // ── App root ──────────────────────────────────────────────────────────────────
 
@@ -257,13 +345,45 @@ class _ShellState extends State<_Shell>
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline, size: 18),
-            color: const Color(0xFF4a5168),
-            tooltip: 'About',
-            onPressed: () => _showAbout(context),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, size: 18, color: Color(0xFF4a5168)),
+            tooltip: '',
+            color: const Color(0xFF181c22),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: const BorderSide(color: Color(0xFF252a33)),
+            ),
+            onSelected: (value) {
+              if (value == 'settings') _showSettings(context);
+              if (value == 'about')    _showAbout(context);
+            },
+            itemBuilder: (ctx) => [
+              PopupMenuItem(
+                value: 'settings',
+                child: Row(children: [
+                  const Icon(Icons.settings_outlined,
+                      size: 15, color: Color(0xFF8a92a8)),
+                  const SizedBox(width: 10),
+                  Text(l10n.menuSettings,
+                      style: const TextStyle(
+                          color: Color(0xFFe8eaf0), fontSize: 13)),
+                ]),
+              ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'about',
+                child: Row(children: [
+                  const Icon(Icons.info_outline,
+                      size: 15, color: Color(0xFF8a92a8)),
+                  const SizedBox(width: 10),
+                  Text(l10n.menuAbout,
+                      style: const TextStyle(
+                          color: Color(0xFFe8eaf0), fontSize: 13)),
+                ]),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
         ],
         bottom: TabBar(
           controller: _tabs,
