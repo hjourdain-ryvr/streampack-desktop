@@ -25,6 +25,8 @@ class _EncoderTabState extends State<EncoderTab> {
   double _segmentDuration = 6;
   bool _ffmpegOk = false, _nvencOk = false;
   int  _srcWidth = 0, _srcHeight = 0;
+  List<String> _selectedFiles = []; // empty = use _inputCtrl text
+  bool _suppressInputListener = false;
 
   bool _wouldUpscale(int i) => _srcHeight > 0 && kPresets[i].height > _srcHeight;
 
@@ -40,8 +42,11 @@ class _EncoderTabState extends State<EncoderTab> {
 
   String _lastProbedPath = '';
   void _onInputChanged() {
+    if (_suppressInputListener) return;
     final path = _inputCtrl.text.trim();
     if (path.isEmpty || path == _lastProbedPath) return;
+    // User typed manually — clear multi-selection
+    if (_selectedFiles.isNotEmpty) setState(() => _selectedFiles = []);
     if (File(path).existsSync()) {
       _lastProbedPath = path;
       setState(() { _srcWidth = 0; _srcHeight = 0; });
@@ -59,20 +64,54 @@ class _EncoderTabState extends State<EncoderTab> {
 
   Future<void> _pickInput() async {
     final result = await FilePicker.platform.pickFiles(
-      type: FileType.video, dialogTitle: context.l10n.pickInputTitle);
-    if (result?.files.single.path != null) {
-      final path = result!.files.single.path!;
-      setState(() {
-        _inputCtrl.text = path; _srcWidth = 0; _srcHeight = 0;
-        final stem = sanitiseStem(path);
+      type: FileType.video,
+      allowMultiple: true,
+      dialogTitle: context.l10n.pickInputTitle);
+    if (result == null || result.files.isEmpty) return;
+    final paths = result.files.map((f) => f.path!).where((p) => p.isNotEmpty).toList();
+    if (paths.isEmpty) return;
+    setState(() {
+      _selectedFiles = paths;
+      _srcWidth = 0; _srcHeight = 0;
+      _suppressInputListener = true;
+      if (paths.length == 1) {
+        _inputCtrl.text = paths.first;
+        final stem = sanitiseStem(paths.first);
         if (_hlsDirCtrl.text.isEmpty) _hlsDirCtrl.text = _defaultHlsDir(stem);
         if (_dashDirCtrl.text.isEmpty) _dashDirCtrl.text = _defaultDashDir(stem);
-      });
-      _probeDimensions(path);
-    }
+      } else {
+        _inputCtrl.text = '${paths.length} files selected';
+      }
+      _suppressInputListener = false;
+    });
+    // Probe all files in parallel, constrain grid to minimum height
+    _probeAllDimensions(paths);
   }
 
-  Future<void> _probeDimensions(String path) async {
+  /// Probes all [paths] in parallel and sets _srcHeight to the minimum
+  /// height found, so the rendition grid only shows safe options for
+  /// every file in the selection.
+  Future<void> _probeAllDimensions(List<String> paths) async {
+    final futures = paths.map((p) => _probeSingleDimensions(p));
+    final results = await Future.wait(futures);
+    final valid = results.where((r) => r != null).cast<({int w, int h})>().toList();
+    if (valid.isEmpty) return;
+    // Constrain to the smallest source — upscaling any file wastes space
+    final minH = valid.map((r) => r.h).reduce((a, b) => a < b ? a : b);
+    final minW = valid.firstWhere((r) => r.h == minH).w;
+    setState(() {
+      _srcWidth  = minW;
+      _srcHeight = minH;
+      _selectedPresets.removeWhere(_wouldUpscale);
+      if (_selectedPresets.isEmpty) {
+        for (var i = 0; i < kPresets.length; i++) {
+          if (!_wouldUpscale(i)) { _selectedPresets.add(i); break; }
+        }
+      }
+    });
+  }
+
+  Future<({int w, int h})?> _probeSingleDimensions(String path) async {
     try {
       final r = await Process.run(ffprobePath(), [
         '-v','error','-select_streams','v:0',
@@ -81,18 +120,25 @@ class _EncoderTabState extends State<EncoderTab> {
         final parts = (r.stdout as String).trim().split('x');
         if (parts.length == 2) {
           final w = int.tryParse(parts[0]) ?? 0, h = int.tryParse(parts[1]) ?? 0;
-          if (w > 0 && h > 0) setState(() {
-            _srcWidth = w; _srcHeight = h;
-            _selectedPresets.removeWhere(_wouldUpscale);
-            if (_selectedPresets.isEmpty) {
-              for (var i = 0; i < kPresets.length; i++) {
-                if (!_wouldUpscale(i)) { _selectedPresets.add(i); break; }
-              }
-            }
-          });
+          if (w > 0 && h > 0) return (w: w, h: h);
         }
       }
     } catch (e) { debugPrint('[probe] $e'); }
+    return null;
+  }
+
+  Future<void> _probeDimensions(String path) async {
+    final r = await _probeSingleDimensions(path);
+    if (r != null) setState(() {
+      _srcWidth  = r.w;
+      _srcHeight = r.h;
+      _selectedPresets.removeWhere(_wouldUpscale);
+      if (_selectedPresets.isEmpty) {
+        for (var i = 0; i < kPresets.length; i++) {
+          if (!_wouldUpscale(i)) { _selectedPresets.add(i); break; }
+        }
+      }
+    });
   }
 
   Future<void> _pickHlsDir() async {
@@ -109,19 +155,31 @@ class _EncoderTabState extends State<EncoderTab> {
 
   Future<void> _submit(JobRunner runner) async {
     final l = context.l10n;
-    final input = _inputCtrl.text.trim(), hlsDir = _hlsDirCtrl.text.trim(), dashDir = _dashDirCtrl.text.trim();
-    final res = _selectedPresets.map((i) => kPresets[i]).toList();
-    if (input.isEmpty) return _toast(l.toastEnterInput);
+    final hlsDir  = _hlsDirCtrl.text.trim();
+    final dashDir = _dashDirCtrl.text.trim();
+    final res     = _selectedPresets.map((i) => kPresets[i]).toList();
+
+    // Resolve input files — multi-select or single typed path
+    final inputs = _selectedFiles.isNotEmpty
+        ? _selectedFiles
+        : [_inputCtrl.text.trim()];
+
+    if (inputs.isEmpty || inputs.first.isEmpty) return _toast(l.toastEnterInput);
     if ((_format == EncodeFormat.hls  || _format == EncodeFormat.both) && hlsDir.isEmpty) return _toast(l.toastEnterHlsDir);
     if ((_format == EncodeFormat.dash || _format == EncodeFormat.both) && dashDir.isEmpty) return _toast(l.toastEnterDashDir);
     if (res.isEmpty) return _toast(l.toastSelectRes);
     if (!_ffmpegOk)  return _toast(l.toastFfmpegMissing);
-    runner.submit(Job(
-      id: DateTime.now().millisecondsSinceEpoch.toRadixString(16).substring(4),
-      input: input, hlsOutputDir: hlsDir,
-      dashOutputDir: dashDir.isEmpty ? hlsDir : dashDir,
-      format: _format, resolutions: res,
-      segmentDuration: _segmentDuration.round(), quality: _quality));
+
+    for (final input in inputs) {
+      runner.submit(Job(
+        id: DateTime.now().millisecondsSinceEpoch.toRadixString(16).substring(4),
+        input: input, hlsOutputDir: hlsDir,
+        dashOutputDir: dashDir.isEmpty ? hlsDir : dashDir,
+        format: _format, resolutions: res,
+        segmentDuration: _segmentDuration.round(), quality: _quality));
+      // Small delay so IDs don't collide (millisecond-based)
+      await Future.delayed(const Duration(milliseconds: 2));
+    }
   }
 
   void _toast(String msg) => ScaffoldMessenger.of(context)
@@ -153,8 +211,11 @@ class _EncoderTabState extends State<EncoderTab> {
               Row(children: [
                 const Icon(Icons.info_outline, size: 11, color: Color(0xFF9aa3b8)),
                 const SizedBox(width: 4),
-                Text('${l.encSourceSize}: ${_srcWidth}×$_srcHeight',
-                    style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
+                Text(
+                  _selectedFiles.length > 1
+                      ? 'Min source: ${_srcWidth}×$_srcHeight — renditions constrained to smallest file'
+                      : '${l.encSourceSize}: ${_srcWidth}×$_srcHeight',
+                  style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
               ]),
             ],
             const SizedBox(height: 16),
@@ -220,6 +281,20 @@ class _EncoderTabState extends State<EncoderTab> {
                 child: Text('${runner.jobs.length}',
                     style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 10, fontFamily: 'monospace')),
               ),
+              const Spacer(),
+              if (runner.jobs.any((j) =>
+                  j.status == JobStatus.queued || j.status == JobStatus.running))
+                TextButton(
+                  onPressed: () => runner.cancelAll(),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.error,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(l.jobCancelAll,
+                      style: const TextStyle(fontSize: 11)),
+                ),
             ])),
           Expanded(child: runner.jobs.isEmpty
               ? _EmptyState(icon: Icons.video_library_outlined, message: l.encNoJobs)

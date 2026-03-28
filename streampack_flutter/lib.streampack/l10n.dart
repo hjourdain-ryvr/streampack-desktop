@@ -90,6 +90,7 @@ class AppLocalizations {
 
   // ── Job card ────────────────────────────────────────────────────────────────
   String get jobCancel            => const {'de':'✕ abbrechen','sv':'✕ avbryt','fr':'✕ annuler'}[lang.code] ?? '✕ cancel';
+  String get jobCancelAll         => const {'de':'Alle abbrechen','sv':'Avbryt alla','fr':'Tout annuler'}[lang.code] ?? 'Cancel all';
   String get jobRemoveTooltip     => const {'de':'Entfernen','sv':'Ta bort','fr':'Supprimer'}[lang.code] ?? 'Remove';
   String get jobValidating        => const {'de':'validierung…','sv':'validerar…','fr':'validation…'}[lang.code] ?? 'validating…';
   String get jobValidationReport  => const {'de':'Validierungsbericht','sv':'Valideringsrapport','fr':'Rapport de validation'}[lang.code] ?? 'Validation report';

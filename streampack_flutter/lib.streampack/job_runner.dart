@@ -33,6 +33,17 @@ class JobRunner extends ChangeNotifier {
     notifyListeners();
   }
 
+  void cancelAll() {
+    for (final job in jobs) {
+      if (job.status == JobStatus.queued || job.status == JobStatus.running) {
+        _processes[job.id]?.kill();
+        _processes.remove(job.id);
+        job.status = JobStatus.cancelled;
+      }
+    }
+    notifyListeners();
+  }
+
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   /// Notify from a background context. Uses a micro-task so it never fires
