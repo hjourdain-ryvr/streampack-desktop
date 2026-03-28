@@ -13,8 +13,9 @@ by CMake during `flutter build`.
 - **Format selector** — HLS, DASH, or Both in a single pass
 - **Quality toggle** — Balanced (`p4`/`medium`) or High (`p6`/`slow`)
 - **Rendition picker** — 240p through 4K, upscale prevention built in
+- **Multiple file input** — select multiple files at once; each becomes a separate job sharing the same settings; renditions constrained to the smallest source
+- **Job queue** — run and monitor multiple encode jobs with progress, elapsed time, per-job cancel and cancel all
 - **Manifest validator** — validate local `.m3u8` or `.mpd` files, or remote URLs
-- **Job queue** — run and monitor multiple encode jobs with progress and elapsed time
 - **Localization** — English, Deutsch, Svenska, Français (runtime switching, no restart)
 
 ### NVIDIA GPU acceleration
@@ -171,10 +172,10 @@ build\windows\x64\runner\Release\ffprobe.exe
 An [Inno Setup](https://jrsoftware.org/isinfo.php) script is included:
 
 ```bat
-iscc streampack-1.1.0.iss
+iscc streampack-1.2.0.iss
 ```
 
-Output: `installer\StreamPack-1.1.0-Setup.exe`
+Output: `installer\StreamPack-1.2.0-Setup.exe`
 
 ---
 
@@ -186,7 +187,7 @@ streampack-desktop/
 ├── build-ffmpeg.sh              ← convenience script wrapping Docker
 ├── setup.sh                     ← Linux: copies lib.streampack/→lib/ and patches CMakeLists.txt
 ├── setup.ps1                    ← Windows: same as setup.sh but PowerShell
-├── streampack-1.1.0.iss         ← Inno Setup installer script
+├── streampack-1.2.0.iss         ← Inno Setup installer script
 ├── README.md                    ← this file
 ├── vendor/                      ← built ffmpeg binaries (git-ignored)
 │   ├── linux/
@@ -264,10 +265,10 @@ appimagetool StreamPack.AppDir StreamPack-x86_64.AppImage
 ### Windows — installer
 
 ```bat
-iscc streampack-1.1.0.iss
+iscc streampack-1.2.0.iss
 ```
 
-Produces a per-user installer (`installer\StreamPack-1.1.0-Setup.exe`) that
+Produces a per-user installer (`installer\StreamPack-1.2.0-Setup.exe`) that
 bundles the executable, all Flutter DLLs, ffmpeg, ffprobe, and assets.
 
 ### Windows — zip
