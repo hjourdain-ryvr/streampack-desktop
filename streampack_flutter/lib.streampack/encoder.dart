@@ -137,7 +137,7 @@ List<String> _streamArgs(List<Preset> resolutions, {required bool nvenc, require
   for (var i = 0; i < resolutions.length; i++) {
     final r = resolutions[i];
     args.addAll([
-      '-map', '[scaled$i]', '-map', '0:a',
+      '-map', '[scaled$i]', '-map', '0:a:0?',
       ..._videoEncoderArgs(i, r, nvenc, quality),
       '-c:a:$i', 'aac', '-b:a:$i', r.audioBitrate,
       '-ar:$i', '44100',
@@ -164,6 +164,7 @@ List<String> buildHlsCmd({
 
   return [
     ffmpegPath(), '-y', '-i', input,
+    '-sn', '-dn',
     ..._filterComplexArgs(resolutions),
     ..._streamArgs(resolutions, nvenc: nvenc, quality: quality),
     '-f', 'hls',
@@ -290,6 +291,7 @@ List<String> buildDashCmd({
       '-hwaccel', 'cuda',
       '-hwaccel_output_format', 'cuda',
       '-i', input,
+      '-sn', '-dn',
       ...maps,
       ...filters,
       ...encArgs,
@@ -322,6 +324,7 @@ List<String> buildDashCmd({
 
     cmd = [
       ffmpegPath(), '-y', '-i', input,
+      '-sn', '-dn',
       '-filter_complex', filterComplex,
       ...maps,
       ...videoArgs,
