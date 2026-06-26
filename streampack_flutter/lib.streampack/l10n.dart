@@ -55,6 +55,8 @@ class AppLocalizations {
   String get encQuality           => const {'de':'Qualität','sv':'Kvalitet','fr':'Qualité'}[lang.code] ?? 'Quality';
   String get encQualityBalanced   => const {'de':'Ausgewogen','sv':'Balanserad','fr':'Équilibré'}[lang.code] ?? 'Balanced';
   String get encQualityHigh       => const {'de':'Hoch','sv':'Hög','fr':'Haute'}[lang.code] ?? 'High';
+  String get encVideoOutput       => const {'de':'Videoausgabe','sv':'Videoutgång','fr':'Sortie vidéo'}[lang.code] ?? 'Video Output';
+  String get encDetected          => const {'de':'Erkannt','sv':'Upptäckt','fr':'Détecté'}[lang.code] ?? 'Detected';
   String get encOutputDir         => const {'de':'Ausgabeverzeichnis','sv':'Utdatakatalog','fr':'Dossier de sortie'}[lang.code] ?? 'Output directory';
   String get encHlsOutputDir      => const {'de':'HLS-Ausgabeverzeichnis','sv':'HLS-utdatakatalog','fr':'Dossier de sortie HLS'}[lang.code] ?? 'HLS output directory';
   String get encDashOutputDir     => const {'de':'DASH-Ausgabeverzeichnis','sv':'DASH-utdatakatalog','fr':'Dossier de sortie DASH'}[lang.code] ?? 'DASH output directory';

@@ -55,6 +55,67 @@ extension EncodeQualityLabel on EncodeQuality {
   };
 }
 
+// ── Video output codec / range ──────────────────────────────────────────────
+//
+// User-selectable output. H.264 is always 8-bit SDR (10-bit SDR sources are
+// reduced 10→8 for free; HDR sources can't target H.264). H.265 preserves the
+// input's bit-depth, and H.265 (HDR) additionally preserves the HDR signal.
+
+enum VideoOutput { h264Sdr, h265Sdr, h265Hdr }
+
+extension VideoOutputInfo on VideoOutput {
+  String get label => switch (this) {
+    VideoOutput.h264Sdr => 'H.264 (SDR)',
+    VideoOutput.h265Sdr => 'H.265 (SDR)',
+    VideoOutput.h265Hdr => 'H.265 (HDR)',
+  };
+  bool get isHevc => this != VideoOutput.h264Sdr;
+  bool get isHdr  => this == VideoOutput.h265Hdr;
+}
+
+// ── Input colour classification (from ffprobe) ──────────────────────────────
+
+enum InputColor {
+  sdr8, sdr10, hdr;
+
+  /// Classify from ffprobe pix_fmt + color_transfer.
+  static InputColor classify({required String? pixFmt, required String? colorTransfer}) {
+    final isHdr = colorTransfer == 'smpte2084' || colorTransfer == 'arib-std-b67';
+    if (isHdr) return InputColor.hdr;
+    final tenBit = (pixFmt ?? '').contains('10') || (pixFmt ?? '').contains('p010');
+    return tenBit ? InputColor.sdr10 : InputColor.sdr8;
+  }
+}
+
+extension InputColorInfo on InputColor {
+  bool get is10bit => this != InputColor.sdr8;
+  bool get isHdr   => this == InputColor.hdr;
+
+  /// Outputs offered for this input (others are greyed out in the UI).
+  /// HDR→SDR (tone-mapping) is intentionally not supported, so HDR inputs
+  /// only offer H.265 (HDR). SDR inputs offer both H.264 and H.265 — the free
+  /// 10→8 reduction keeps H.264 available for 10-bit SDR.
+  Set<VideoOutput> get validOutputs => switch (this) {
+    InputColor.sdr8  => {VideoOutput.h264Sdr, VideoOutput.h265Sdr},
+    InputColor.sdr10 => {VideoOutput.h264Sdr, VideoOutput.h265Sdr},
+    InputColor.hdr   => {VideoOutput.h265Hdr},
+  };
+
+  VideoOutput get defaultOutput =>
+      this == InputColor.hdr ? VideoOutput.h265Hdr : VideoOutput.h264Sdr;
+}
+
+/// HDR10 static metadata extracted from the source, formatted for libx265.
+class HdrMetadata {
+  /// e.g. "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+  final String? masterDisplay;
+  /// e.g. "1000,400" (MaxCLL,MaxFALL)
+  final String? maxCll;
+  const HdrMetadata({this.masterDisplay, this.maxCll});
+
+  bool get isEmpty => masterDisplay == null && maxCll == null;
+}
+
 // ── Job ───────────────────────────────────────────────────────────────────────
 
 enum JobStatus { queued, running, validating, done, error, cancelled }
@@ -68,6 +129,10 @@ class Job {
   final List<Preset> resolutions;
   final int segmentDuration;
   final EncodeQuality quality;
+  final VideoOutput output;       // chosen video codec / range
+
+  InputColor inputColor;          // probed from source before encode
+  HdrMetadata? hdrMeta;           // HDR10 static metadata (HDR sources only)
 
   JobStatus status;
   double progress;        // 0.0 – 1.0
@@ -89,6 +154,9 @@ class Job {
     required this.resolutions,
     required this.segmentDuration,
     required this.quality,
+    this.output = VideoOutput.h264Sdr,
+    this.inputColor = InputColor.sdr8,
+    this.hdrMeta,
   })  : status = JobStatus.queued,
         progress = 0,
         currentPass = '',

@@ -100,6 +100,36 @@ RUN git clone --depth 1 --branch "${X264_VERSION}" \
     && make -j"$(nproc)" \
     && make install
 
+# ── Build x265 (static, 8-bit + 10-bit multilib) ──────────────────────────────
+# Multilib so one libx265 can emit both 8-bit (SDR) and 10-bit (10-bit SDR / HDR).
+ARG X265_VERSION=3.6
+RUN git clone --depth 1 --branch "${X265_VERSION}" \
+      https://bitbucket.org/multicoreware/x265_git.git x265 \
+    && cd x265 \
+    && mkdir -p build/8 build/10 \
+    `# 10-bit library` \
+    && cd build/10 \
+    && cmake ../../source \
+         -DCMAKE_INSTALL_PREFIX=/build/linux-prefix \
+         -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
+         -DENABLE_SHARED=OFF -DENABLE_CLI=OFF \
+    && make -j"$(nproc)" \
+    && cp libx265.a /tmp/libx265_main10.a \
+    `# 8-bit library, aware of the linked 10-bit one` \
+    && cd ../8 \
+    && cmake ../../source \
+         -DCMAKE_INSTALL_PREFIX=/build/linux-prefix \
+         -DENABLE_SHARED=OFF -DENABLE_CLI=OFF \
+         -DEXTRA_LIB="/tmp/libx265_main10.a" -DLINKED_10BIT=ON \
+    && make -j"$(nproc)" \
+    `# merge 8-bit + 10-bit static archives into a single libx265.a` \
+    && mv libx265.a libx265_main.a \
+    && printf 'CREATE libx265.a\nADDLIB libx265_main.a\nADDLIB /tmp/libx265_main10.a\nSAVE\nEND\n' | ar -M \
+    && make install \
+    && cp libx265.a /build/linux-prefix/lib/libx265.a \
+    `# drop -lgcc_s so ffmpeg links the STATIC libgcc (no shared libgcc dependency)` \
+    && sed -i 's/-lgcc_s//g' /build/linux-prefix/lib/pkgconfig/x265.pc
+
 # ── Build ffmpeg (static, Linux) ──────────────────────────────────────────────
 RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.bz2" \
     | tar -xj
@@ -111,7 +141,7 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --pkg-config-flags="--static" \
          --extra-cflags="-I/build/linux-prefix/include" \
          --extra-ldflags="-L/build/linux-prefix/lib" \
-         --extra-libs="-lpthread -lm" \
+         --extra-libs="-lpthread -lm -lstdc++" \
          --enable-gpl \
          --enable-static \
          --disable-shared \
@@ -122,6 +152,8 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          `# Encoders` \
          --enable-libx264 \
          --enable-encoder=libx264 \
+         --enable-libx265 \
+         --enable-encoder=libx265 \
          --enable-encoder=aac \
          \
          `# NVIDIA hardware acceleration (NVENC/NVDEC)` \
@@ -150,6 +182,9 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --enable-decoder=aac \
          --enable-decoder=aac_latm \
          --enable-decoder=ac3 \
+         --enable-decoder=dca \
+         --enable-decoder=eac3 \
+         --enable-decoder=truehd \
          --enable-decoder=mp3 \
          --enable-decoder=mp2 \
          --enable-decoder=pcm_s16le \
@@ -301,6 +336,43 @@ RUN git clone --depth 1 --branch "${X264_VERSION}" \
     && make -j"$(nproc)" \
     && make install
 
+# ── Build x265 for Windows (static, 8-bit + 10-bit multilib via mingw) ─────────
+ARG X265_VERSION=3.6
+RUN git clone --depth 1 --branch "${X265_VERSION}" \
+      https://bitbucket.org/multicoreware/x265_git.git x265-win \
+    && cd x265-win \
+    && mkdir -p build/8 build/10 \
+    `# 10-bit library` \
+    && cd build/10 \
+    && cmake ../../source \
+         -DCMAKE_SYSTEM_NAME=Windows \
+         -DCMAKE_C_COMPILER=${HOST}-gcc -DCMAKE_CXX_COMPILER=${HOST}-g++ \
+         -DCMAKE_RC_COMPILER=${HOST}-windres \
+         -DCMAKE_FIND_ROOT_PATH=/usr/${HOST} \
+         -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+         -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
+         -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DWINXP_SUPPORT=OFF \
+    && make -j"$(nproc)" \
+    && cp libx265.a /tmp/libx265_main10_win.a \
+    `# 8-bit library, aware of the linked 10-bit one` \
+    && cd ../8 \
+    && cmake ../../source \
+         -DCMAKE_SYSTEM_NAME=Windows \
+         -DCMAKE_C_COMPILER=${HOST}-gcc -DCMAKE_CXX_COMPILER=${HOST}-g++ \
+         -DCMAKE_RC_COMPILER=${HOST}-windres \
+         -DCMAKE_FIND_ROOT_PATH=/usr/${HOST} \
+         -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+         -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DWINXP_SUPPORT=OFF \
+         -DEXTRA_LIB="/tmp/libx265_main10_win.a" -DLINKED_10BIT=ON \
+    && make -j"$(nproc)" \
+    `# merge 8-bit + 10-bit static archives into a single libx265.a` \
+    && mv libx265.a libx265_main.a \
+    && printf 'CREATE libx265.a\nADDLIB libx265_main.a\nADDLIB /tmp/libx265_main10_win.a\nSAVE\nEND\n' | ${HOST}-ar -M \
+    && make install \
+    && cp libx265.a ${PREFIX}/lib/libx265.a \
+    `# drop -lgcc_s so ffmpeg links the STATIC libgcc (no libgcc_s_seh-1.dll dependency)` \
+    && sed -i 's/-lgcc_s//g' ${PREFIX}/lib/pkgconfig/x265.pc
+
 # ── Build ffmpeg for Windows ──────────────────────────────────────────────────
 # Re-use the already-downloaded tarball from the linux-build stage if possible,
 # otherwise download again.
@@ -312,8 +384,9 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --prefix=/build/win-out \
          --pkg-config-flags="--static" \
          --extra-cflags="-I${PREFIX}/include -I/usr/local/include" \
-         --extra-ldflags="-L${PREFIX}/lib -static" \
-         --extra-libs="-lpthread -lm" \
+         --extra-ldflags="-L${PREFIX}/lib -static -static-libgcc -static-libstdc++" \
+         --extra-ldexeflags="-static -static-libgcc -static-libstdc++" \
+         --extra-libs="-lpthread -lm -lstdc++" \
          --target-os=mingw32 \
          --arch=x86_64 \
          --cross-prefix=${HOST}- \
@@ -326,6 +399,8 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          \
          --enable-libx264 \
          --enable-encoder=libx264 \
+         --enable-libx265 \
+         --enable-encoder=libx265 \
          --enable-encoder=aac \
          \
          `# NVIDIA hardware acceleration (runtime dynamic loading via LoadLibrary)` \
@@ -350,6 +425,9 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --enable-decoder=aac \
          --enable-decoder=aac_latm \
          --enable-decoder=ac3 \
+         --enable-decoder=dca \
+         --enable-decoder=eac3 \
+         --enable-decoder=truehd \
          --enable-decoder=mp3 \
          --enable-decoder=mp2 \
          --enable-decoder=pcm_s16le \

@@ -154,7 +154,16 @@ Future<ValidationResult> validateM3u8(String target) async {
           if (!['h264','hevc','av1'].contains(codec)) {
             vwarn('VIDEO_CODEC', "Codec '$codec' may not be widely supported (prefer h264)");
           }
-          if (!['yuv420p','yuvj420p'].contains(pix)) {
+          // 8-bit 4:2:0 is the most compatible. 10-bit (yuv420p10le/p010le) is
+          // valid and intended for HEVC/AV1 (10-bit SDR and HDR), so don't flag it.
+          final sdr8     = ['yuv420p', 'yuvj420p'].contains(pix);
+          final tenBitOk = ['yuv420p10le', 'p010le'].contains(pix) &&
+                           (codec == 'hevc' || codec == 'av1');
+          if (sdr8) {
+            // standard — already shown in VIDEO_STREAM
+          } else if (tenBitOk) {
+            vok('PIX_FMT', "10-bit ($pix) preserved — expected for HDR / 10-bit $codec");
+          } else {
             vwarn('PIX_FMT', "Pixel format '$pix' may cause issues (prefer yuv420p)");
           }
           if (res != 'unknown' && '${width}x$height' != res) {

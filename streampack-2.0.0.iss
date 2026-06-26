@@ -9,11 +9,11 @@
 ;   2. Inno Setup 6+ installed          (https://jrsoftware.org/isinfo.php)
 ;
 ; Output:
-;   installer\StreamPack-1.2.1-Setup.exe
+;   installer\StreamPack-2.0.0-Setup.exe
 ; ============================================================================
 
 #define AppName      "StreamPack"
-#define AppVersion   "1.2.1"
+#define AppVersion   "2.0.0"
 #define AppPublisher "Hervé Jourdain"
 #define AppURL       "https://github.com/hjourdain-ryvr/streampack-desktop"
 #define AppExeName   "streampack.exe"

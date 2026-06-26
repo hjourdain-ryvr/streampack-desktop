@@ -80,7 +80,7 @@ class JobRunner extends ChangeNotifier {
     try {
       final probe = await Process.run(ffprobePath(), [
         '-v', 'error',
-        '-show_entries', 'format=duration:stream=width,height',
+        '-show_entries', 'format=duration:stream=width,height,pix_fmt,color_transfer',
         '-select_streams', 'v:0',
         '-of', 'json', job.input,
       ]);
@@ -94,8 +94,21 @@ class JobRunner extends ChangeNotifier {
         final hMatch = RegExp(r'"height"\s*:\s*(\d+)').firstMatch(json);
         srcWidth  = int.tryParse(wMatch?.group(1) ?? '') ?? 0;
         srcHeight = int.tryParse(hMatch?.group(1) ?? '') ?? 0;
+        // Classify colour (bit-depth + HDR) for codec selection
+        final pixMatch = RegExp(r'"pix_fmt"\s*:\s*"([^"]+)"').firstMatch(json);
+        final trcMatch = RegExp(r'"color_transfer"\s*:\s*"([^"]+)"').firstMatch(json);
+        job.inputColor = InputColor.classify(
+          pixFmt: pixMatch?.group(1),
+          colorTransfer: trcMatch?.group(1),
+        );
       }
     } catch (_) {}
+
+    // For HDR sources, extract HDR10 static metadata (mastering display + CLL)
+    // so H.265 (HDR) output can carry it through.
+    if (job.inputColor == InputColor.hdr) {
+      job.hdrMeta = await probeHdrMetadata(job.input);
+    }
 
     // Filter out renditions that would require upscaling.
     // Upscaling wastes encode time and produces worse quality than
@@ -127,8 +140,16 @@ class JobRunner extends ChangeNotifier {
     // Detect NVENC once per job (cached globally after first check)
     final useNvenc = await nvencAvailable();
     if (useNvenc) {
-      debugPrint('[job] NVENC available — using h264_nvenc');
+      debugPrint('[job] NVENC available — using GPU encoder');
     }
+
+    // Guard: ensure the chosen output is valid for the detected input
+    // (the UI greys out invalid options, but re-derive defensively here).
+    final output = job.inputColor.validOutputs.contains(job.output)
+        ? job.output
+        : job.inputColor.defaultOutput;
+    debugPrint('[job] input=${job.inputColor} output=$output '
+               'hdrMeta=${job.hdrMeta != null}');
 
     final passes = switch (job.format) {
       EncodeFormat.hls  => ['hls'],
@@ -168,13 +189,19 @@ class JobRunner extends ChangeNotifier {
               resolutions: job.activeResolutions,
               segmentDuration: job.segmentDuration,
               nvenc: useNvenc,
-              quality: job.quality)
+              quality: job.quality,
+              output: output,
+              inputColor: job.inputColor,
+              hdrMeta: job.hdrMeta)
           : buildDashCmd(
               input: job.input, outputDir: outDir,
               resolutions: job.activeResolutions,
               segmentDuration: job.segmentDuration,
               nvenc: useNvenc,
-              quality: job.quality);
+              quality: job.quality,
+              output: output,
+              inputColor: job.inputColor,
+              hdrMeta: job.hdrMeta);
 
       final success = await _runPass(
         job: job, cmd: cmd, pass: pass,

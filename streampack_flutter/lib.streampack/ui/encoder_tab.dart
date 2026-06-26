@@ -6,7 +6,7 @@ import '../models.dart';
 import '../job_runner.dart';
 import '../ffmpeg.dart';
 import '../l10n.dart';
-import '../encoder.dart' show sanitiseStem, nvencAvailable;
+import '../encoder.dart' show sanitiseStem, nvencAvailable, probeInputColor;
 import 'job_card.dart';
 
 class EncoderTab extends StatefulWidget {
@@ -21,6 +21,8 @@ class _EncoderTabState extends State<EncoderTab> {
   final _dashDirCtrl = TextEditingController();
   EncodeFormat  _format  = EncodeFormat.hls;
   EncodeQuality _quality = EncodeQuality.balanced;
+  InputColor    _inputColor = InputColor.sdr8;
+  VideoOutput   _output     = VideoOutput.h264Sdr;
   final Set<int> _selectedPresets = {1, 2};
   double _segmentDuration = 6;
   bool _ffmpegOk = false, _nvencOk = false;
@@ -29,6 +31,12 @@ class _EncoderTabState extends State<EncoderTab> {
   bool _suppressInputListener = false;
 
   bool _wouldUpscale(int i) => _srcHeight > 0 && kPresets[i].height > _srcHeight;
+
+  String _inputColorLabel(InputColor c) => switch (c) {
+    InputColor.sdr8  => 'SDR (8-bit)',
+    InputColor.sdr10 => 'SDR (10-bit)',
+    InputColor.hdr   => 'HDR (10-bit)',
+  };
 
   @override
   void initState() {
@@ -86,6 +94,7 @@ class _EncoderTabState extends State<EncoderTab> {
     });
     // Probe all files in parallel, constrain grid to minimum height
     _probeAllDimensions(paths);
+    _probeColor(paths);
   }
 
   /// Probes all [paths] in parallel and sets _srcHeight to the minimum
@@ -139,6 +148,20 @@ class _EncoderTabState extends State<EncoderTab> {
         }
       }
     });
+    _probeColor([path]);
+  }
+
+  /// Probe the colour (bit-depth + HDR) of the selection to gate output codecs.
+  /// Mixed selections fall back to SDR-8 (most permissive); per-job logic in
+  /// JobRunner corrects HDR files individually.
+  Future<void> _probeColor(List<String> paths) async {
+    final colors = await Future.wait(paths.map(probeInputColor));
+    if (!mounted || colors.isEmpty) return;
+    final uniform = colors.every((c) => c == colors.first) ? colors.first : InputColor.sdr8;
+    setState(() {
+      _inputColor = uniform;
+      _output     = uniform.defaultOutput;
+    });
   }
 
   Future<void> _pickHlsDir() async {
@@ -176,7 +199,8 @@ class _EncoderTabState extends State<EncoderTab> {
         input: input, hlsOutputDir: hlsDir,
         dashOutputDir: dashDir.isEmpty ? hlsDir : dashDir,
         format: _format, resolutions: res,
-        segmentDuration: _segmentDuration.round(), quality: _quality));
+        segmentDuration: _segmentDuration.round(), quality: _quality,
+        output: _output, inputColor: _inputColor));
       // Small delay so IDs don't collide (millisecond-based)
       await Future.delayed(const Duration(milliseconds: 2));
     }
@@ -229,6 +253,20 @@ class _EncoderTabState extends State<EncoderTab> {
             _QualityToggle(value: _quality,
                 balancedLabel: l.encQualityBalanced, highLabel: l.encQualityHigh,
                 onChanged: (q) => setState(() => _quality = q)),
+            const SizedBox(height: 16),
+            _SectionLabel(l.encVideoOutput),
+            const SizedBox(height: 12),
+            _OutputToggle(value: _output, valid: _inputColor.validOutputs,
+                onChanged: (o) => setState(() => _output = o)),
+            if (_srcWidth > 0) ...[
+              const SizedBox(height: 4),
+              Row(children: [
+                const Icon(Icons.palette_outlined, size: 11, color: Color(0xFF9aa3b8)),
+                const SizedBox(width: 4),
+                Text('${l.encDetected}: ${_inputColorLabel(_inputColor)}',
+                    style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
+              ]),
+            ],
             const SizedBox(height: 16),
             if (_format != EncodeFormat.dash) ...[
               _PathField(controller: _hlsDirCtrl, hint: '/srv/hls/streams',
@@ -366,6 +404,39 @@ class _FormatToggle extends StatelessWidget {
             alignment: Alignment.center,
             child: Text(lbl, style: TextStyle(color: sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
                 fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)))));
+      }).toList()),
+    );
+  }
+}
+
+class _OutputToggle extends StatelessWidget {
+  final VideoOutput value;
+  final Set<VideoOutput> valid;
+  final ValueChanged<VideoOutput> onChanged;
+  const _OutputToggle({required this.value, required this.valid, required this.onChanged});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(color: const Color(0xFF20252f),
+          border: Border.all(color: const Color(0xFF2e3848)), borderRadius: BorderRadius.circular(8)),
+      padding: const EdgeInsets.all(3),
+      child: Row(children: VideoOutput.values.map((o) {
+        final sel = o == value;
+        final enabled = valid.contains(o);
+        final child = AnimatedContainer(duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(color: sel ? const Color(0xFF00d4aa) : Colors.transparent,
+              borderRadius: BorderRadius.circular(5)),
+          alignment: Alignment.center,
+          child: Text(o.label, style: TextStyle(
+              color: !enabled ? const Color(0xFF555c6b)
+                   : sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
+              fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.3)));
+        return Expanded(child: enabled
+          ? GestureDetector(onTap: () => onChanged(o), child: child)
+          : Opacity(opacity: 0.45, child: Tooltip(
+              message: o.isHdr ? 'Source is not HDR' : 'Not available for HDR source',
+              child: child)));
       }).toList()),
     );
   }

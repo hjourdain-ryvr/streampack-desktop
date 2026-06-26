@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'dart:io';
+import 'dart:convert';
 import 'package:xml/xml.dart';
 import 'models.dart';
 import 'ffmpeg.dart';
@@ -73,31 +74,159 @@ Future<bool> nvencAvailable() async {
 /// [nvenc] should be the cached result from nvencAvailable().
 String _videoEncoder(bool nvenc) => nvenc ? 'h264_nvenc' : 'libx264';
 
-/// Extra flags needed per encoder:
-/// - libx264: preset from quality setting (medium/slow)
-/// - h264_nvenc: preset p4/p6 from quality, vbr with bufsize, high profile
-List<String> _videoEncoderArgs(int streamIdx, Preset r, bool nvenc, EncodeQuality quality) {
+// ── Source colour / HDR probing ───────────────────────────────────────────────
+
+/// Probe a source file's colour characteristics (bit-depth + HDR) so the UI can
+/// gate which output codecs are valid. Returns [InputColor.sdr8] on any failure.
+Future<InputColor> probeInputColor(String input) async {
+  try {
+    final res = await Process.run(ffprobePath(), [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=pix_fmt,color_transfer',
+      '-of', 'json', input,
+    ]).timeout(const Duration(seconds: 10));
+    if (res.exitCode != 0) return InputColor.sdr8;
+    final data = jsonDecode(res.stdout as String) as Map<String, dynamic>;
+    final streams = (data['streams'] as List?) ?? const [];
+    if (streams.isEmpty) return InputColor.sdr8;
+    final s = streams.first as Map<String, dynamic>;
+    return InputColor.classify(
+      pixFmt: s['pix_fmt'] as String?,
+      colorTransfer: s['color_transfer'] as String?,
+    );
+  } catch (_) {
+    return InputColor.sdr8;
+  }
+}
+
+/// Extract HDR10 static metadata (mastering display + content light level) from
+/// the first frame, formatted for libx265's -x265-params. Returns null if absent.
+Future<HdrMetadata?> probeHdrMetadata(String input) async {
+  try {
+    final res = await Process.run(ffprobePath(), [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-read_intervals', '%+#1',
+      '-show_frames',
+      '-show_entries',
+      'frame_side_data=side_data_type,red_x,red_y,green_x,green_y,'
+          'blue_x,blue_y,white_point_x,white_point_y,'
+          'min_luminance,max_luminance,max_content,max_average',
+      '-of', 'json', input,
+    ]).timeout(const Duration(seconds: 15));
+    if (res.exitCode != 0) return null;
+    final data = jsonDecode(res.stdout as String) as Map<String, dynamic>;
+    final frames = (data['frames'] as List?) ?? const [];
+
+    // Numerator of an "X/Y" rational (libx265 wants the integer numerators).
+    int numer(Map sd, String key) {
+      final v = sd[key]?.toString() ?? '';
+      final slash = v.indexOf('/');
+      return int.tryParse(slash >= 0 ? v.substring(0, slash) : v) ?? 0;
+    }
+
+    String? masterDisplay, maxCll;
+    for (final f in frames) {
+      for (final sd in (f['side_data_list'] as List?) ?? const []) {
+        final type = (sd['side_data_type'] ?? '').toString();
+        if (type == 'Mastering display metadata') {
+          masterDisplay =
+              'G(${numer(sd, 'green_x')},${numer(sd, 'green_y')})'
+              'B(${numer(sd, 'blue_x')},${numer(sd, 'blue_y')})'
+              'R(${numer(sd, 'red_x')},${numer(sd, 'red_y')})'
+              'WP(${numer(sd, 'white_point_x')},${numer(sd, 'white_point_y')})'
+              'L(${numer(sd, 'max_luminance')},${numer(sd, 'min_luminance')})';
+        } else if (type == 'Content light level metadata') {
+          maxCll = '${numer(sd, 'max_content')},${numer(sd, 'max_average')}';
+        }
+      }
+    }
+    if (masterDisplay == null && maxCll == null) return null;
+    return HdrMetadata(masterDisplay: masterDisplay, maxCll: maxCll);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Concrete output characteristics derived from the chosen [VideoOutput] and
+/// the probed [InputColor]. H.264 is always 8-bit; H.265 preserves the input's
+/// bit-depth (and HDR signal for H.265 HDR).
+class _OutSpec {
+  final bool hevc;
+  final bool tenBit;
+  final bool hdr;
+  const _OutSpec(this.hevc, this.tenBit, this.hdr);
+
+  factory _OutSpec.from(VideoOutput out, InputColor input) {
+    final hevc = out.isHevc;
+    final hdr  = out.isHdr;
+    // H.264 → always 8-bit (10-bit SDR reduced 10→8). H.265 → keep input depth.
+    final tenBit = hdr || (hevc && input.is10bit);
+    return _OutSpec(hevc, tenBit, hdr);
+  }
+
+  /// Software pixel format for CPU-frame paths (libx264/libx265 and CPU-frame nvenc).
+  String get cpuPixFmt  => tenBit ? 'yuv420p10le' : 'yuv420p';
+  /// scale_cuda output format for GPU-frame paths.
+  String get cudaPixFmt => tenBit ? 'p010le' : 'yuv420p';
+}
+
+/// Per-rendition video encoder flags for the chosen codec/range.
+/// - h264_nvenc / hevc_nvenc on GPU; libx264 / libx265 on CPU.
+/// - [gpuFrames] true when frames are already in CUDA memory (DASH NVENC path),
+///   where scale_cuda sets the pixel format; otherwise we set -pix_fmt here so
+///   10-bit is preserved and 10-bit-SDR→H.264 is reduced 10→8.
+List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
+    {required bool nvenc, required bool gpuFrames,
+     required EncodeQuality quality, HdrMetadata? hdr}) {
+  final br     = r.videoBitrate;
+  final brVal  = int.tryParse(br.replaceAll(RegExp(r'[^\d]'), '')) ?? 5000;
+  final unit   = br.replaceAll(RegExp(r'[\d]'), '');
+  final bufsize = '${brVal * 2}$unit';
+
   if (nvenc) {
-    final bitrateStr = r.videoBitrate;
-    final bitrateVal = int.tryParse(
-        bitrateStr.replaceAll(RegExp(r'[^\d]'), '')) ?? 5000;
-    final unit = bitrateStr.replaceAll(RegExp(r'[\d]'), '');
-    final bufsize = '${bitrateVal * 2}$unit';
+    final codec   = spec.hevc ? 'hevc_nvenc' : 'h264_nvenc';
+    final profile = spec.hevc ? (spec.tenBit ? 'main10' : 'main') : 'high';
     return [
-      '-c:v:$streamIdx', 'h264_nvenc',
-      '-preset:v:$streamIdx', quality.nvencPreset,
-      '-tune:v:$streamIdx', 'hq',
-      '-profile:v:$streamIdx', 'high',
-      '-rc:v:$streamIdx', 'vbr',
-      '-b:v:$streamIdx', bitrateStr,
-      '-maxrate:v:$streamIdx', bitrateStr,
-      '-bufsize:v:$streamIdx', bufsize,
+      '-c:v:$i', codec,
+      '-preset:v:$i', quality.nvencPreset,
+      '-tune:v:$i', 'hq',
+      '-profile:v:$i', profile,
+      '-rc:v:$i', 'vbr',
+      '-b:v:$i', br,
+      '-maxrate:v:$i', br,
+      '-bufsize:v:$i', bufsize,
+      if (!gpuFrames) ...['-pix_fmt:v:$i', spec.cpuPixFmt],
+      if (spec.hdr) ...[
+        '-colorspace:v:$i', 'bt2020nc',
+        '-color_primaries:v:$i', 'bt2020',
+        '-color_trc:v:$i', 'smpte2084',
+        '-color_range:v:$i', 'tv',
+      ],
     ];
   }
+
+  if (spec.hevc) {
+    final params = <String>['log-level=error'];
+    if (spec.hdr) {
+      params.addAll(['colorprim=bt2020', 'transfer=smpte2084',
+                     'colormatrix=bt2020nc', 'hdr10=1', 'repeat-headers=1']);
+      if (hdr?.masterDisplay != null) params.add('master-display=${hdr!.masterDisplay}');
+      if (hdr?.maxCll != null)        params.add('max-cll=${hdr!.maxCll}');
+    }
+    return [
+      '-c:v:$i', 'libx265',
+      '-preset:v:$i', quality.x264Preset,
+      '-pix_fmt:v:$i', spec.cpuPixFmt,
+      '-x265-params:v:$i', params.join(':'),
+      '-b:v:$i', br,
+    ];
+  }
+
   return [
-    '-c:v:$streamIdx', 'libx264',
-    '-preset:v:$streamIdx', quality.x264Preset,
-    '-b:v:$streamIdx', r.videoBitrate,
+    '-c:v:$i', 'libx264',
+    '-preset:v:$i', quality.x264Preset,
+    '-pix_fmt:v:$i', 'yuv420p',
+    '-b:v:$i', br,
   ];
 }
 
@@ -132,14 +261,17 @@ String _scaleFilterFromSplit(int i, Preset r) {
       '[scaled$i]';
 }
 
-List<String> _streamArgs(List<Preset> resolutions, {required bool nvenc, required EncodeQuality quality}) {
+List<String> _streamArgs(List<Preset> resolutions, _OutSpec spec,
+    {required bool nvenc, required EncodeQuality quality, HdrMetadata? hdr}) {
   final args = <String>[];
   for (var i = 0; i < resolutions.length; i++) {
     final r = resolutions[i];
     args.addAll([
       '-map', '[scaled$i]', '-map', '0:a:0?',
-      ..._videoEncoderArgs(i, r, nvenc, quality),
+      ..._videoEncoderArgs(i, r, spec,
+          nvenc: nvenc, gpuFrames: false, quality: quality, hdr: hdr),
       '-c:a:$i', 'aac', '-b:a:$i', r.audioBitrate,
+      '-ac:$i', '2',
       '-ar:$i', '44100',
     ]);
   }
@@ -158,25 +290,45 @@ List<String> buildHlsCmd({
   required int segmentDuration,
   required bool nvenc,
   required EncodeQuality quality,
+  required VideoOutput output,
+  required InputColor inputColor,
+  HdrMetadata? hdrMeta,
 }) {
   final stem   = sanitiseStem(input);
-  final segDir = '$outputDir${Platform.pathSeparator}$stem';
+  // Use forward slashes for all HLS output paths. ffmpeg derives the fMP4
+  // init-segment directory by scanning the output path for '/', so on Windows
+  // backslash paths it finds none, and the per-variant init segments are not
+  // written into segDir (they vanish / land in the CWD) — breaking playback and
+  // validation. Windows accepts '/' fine, so this works on both platforms.
+  final segDir = '$outputDir/$stem'.replaceAll('\\', '/');
+  final spec   = _OutSpec.from(output, inputColor);
+
+  // HEVC in HLS must use fMP4 segments (HEVC-in-MPEG-TS is not valid HLS).
+  final segArgs = spec.hevc
+      ? <String>[
+          '-hls_segment_type', 'fmp4',
+          '-hls_fmp4_init_filename', '${stem}_%v_init.mp4',
+          '-hls_segment_filename', '$segDir/${stem}_%v_%03d.m4s',
+        ]
+      : <String>[
+          '-hls_segment_type', 'mpegts',
+          '-hls_segment_filename', '$segDir/${stem}_%v_%03d.ts',
+        ];
 
   return [
     ffmpegPath(), '-y', '-i', input,
     '-sn', '-dn',
     ..._filterComplexArgs(resolutions),
-    ..._streamArgs(resolutions, nvenc: nvenc, quality: quality),
+    ..._streamArgs(resolutions, spec, nvenc: nvenc, quality: quality, hdr: hdrMeta),
     '-f', 'hls',
     '-hls_time', '$segmentDuration',
     '-hls_playlist_type', 'vod',
     '-hls_flags', 'independent_segments',
-    '-hls_segment_type', 'mpegts',
-    '-hls_segment_filename', '$segDir${Platform.pathSeparator}${stem}_%v_%03d.ts',
+    ...segArgs,
     '-master_pl_name', 'master.m3u8',
     '-var_stream_map',
     resolutions.map((r) => 'v:${resolutions.indexOf(r)},a:${resolutions.indexOf(r)},name:${r.height}p').join(' '),
-    '$segDir${Platform.pathSeparator}${stem}_%v.m3u8',
+    '$segDir/${stem}_%v.m3u8',
   ];
 }
 
@@ -254,10 +406,14 @@ List<String> buildDashCmd({
   required int segmentDuration,
   required bool nvenc,
   required EncodeQuality quality,
+  required VideoOutput output,
+  required InputColor inputColor,
+  HdrMetadata? hdrMeta,
 }) {
   final stem   = sanitiseStem(input);
   final segDir = '$outputDir${Platform.pathSeparator}$stem';
   final n      = resolutions.length;
+  final spec   = _OutSpec.from(output, inputColor);
 
   const repId = r'$RepresentationID$';
   const num   = r'$Number$';
@@ -274,10 +430,11 @@ List<String> buildDashCmd({
     final encArgs = <String>[];
 
     for (var i = 0; i < n; i++) {
-      maps.addAll(['-map', '0:v:0', '-map', '0:a:0']);
+      maps.addAll(['-map', '0:v:0', '-map', '0:a:0?']);
       filters.addAll(['-filter:v:$i',
-          'scale_cuda=${resolutions[i].width}:${resolutions[i].height},setsar=1']);
-      encArgs.addAll(_videoEncoderArgs(i, resolutions[i], true, quality));
+          'scale_cuda=${resolutions[i].width}:${resolutions[i].height}:format=${spec.cudaPixFmt},setsar=1']);
+      encArgs.addAll(_videoEncoderArgs(i, resolutions[i], spec,
+          nvenc: true, gpuFrames: true, quality: quality, hdr: hdrMeta));
       encArgs.addAll([
         '-c:a:$i', 'aac',
         '-b:a:$i', resolutions[i].audioBitrate,
@@ -316,10 +473,12 @@ List<String> buildDashCmd({
 
     final maps = <String>[
       for (var i = 0; i < n; i++) ...[ '-map', '[scaled$i]' ],
-      '-map', '0:a:0',
+      '-map', '0:a:0?',
     ];
     final videoArgs = <String>[
-      for (var i = 0; i < n; i++) ..._videoEncoderArgs(i, resolutions[i], false, quality),
+      for (var i = 0; i < n; i++)
+        ..._videoEncoderArgs(i, resolutions[i], spec,
+            nvenc: false, gpuFrames: false, quality: quality, hdr: hdrMeta),
     ];
 
     cmd = [
@@ -330,6 +489,7 @@ List<String> buildDashCmd({
       ...videoArgs,
       '-c:a:$n', 'aac',
       '-b:a:$n', resolutions.first.audioBitrate,
+      '-ac:$n', '2',
       '-ar:$n', '44100',
       '-f', 'dash',
       '-seg_duration', '$segmentDuration',
