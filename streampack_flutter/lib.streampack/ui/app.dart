@@ -5,7 +5,10 @@ import '../l10n.dart';
 import 'encoder_tab.dart';
 import 'validator_tab.dart';
 
-const kAppVersion   = '2.0.0';
+// Set at startup from the build's package info (pubspec version) in main().
+// Empty until loaded; pubspec is the single source of truth — no version
+// literal lives here, so it can't drift.
+String kAppVersion  = '';
 const kAppCopyright = '© 2026 Hervé Jourdain — hjourdain@ryvrtech.com';
 
 // ── About dialog ──────────────────────────────────────────────────────────────
@@ -47,7 +50,7 @@ void _showAbout(BuildContext context) {
               ],
             ),
             const SizedBox(height: 16),
-            Text('Version $kAppVersion',
+            Text('Version ${kAppVersion.isEmpty ? "unknown" : kAppVersion}',
                 style: const TextStyle(
                     color: Color(0xFFb8bfcf), fontSize: 12, fontFamily: 'monospace')),
             const SizedBox(height: 24),

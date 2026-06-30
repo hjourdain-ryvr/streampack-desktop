@@ -155,6 +155,8 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --enable-libx265 \
          --enable-encoder=libx265 \
          --enable-encoder=aac \
+         --enable-encoder=ac3 \
+         --enable-encoder=eac3 \
          \
          `# NVIDIA hardware acceleration (NVENC/NVDEC)` \
          `# Built via nv-codec-headers -- loaded dynamically at runtime` \
@@ -402,6 +404,8 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --enable-libx265 \
          --enable-encoder=libx265 \
          --enable-encoder=aac \
+         --enable-encoder=ac3 \
+         --enable-encoder=eac3 \
          \
          `# NVIDIA hardware acceleration (runtime dynamic loading via LoadLibrary)` \
          --enable-ffnvcodec \

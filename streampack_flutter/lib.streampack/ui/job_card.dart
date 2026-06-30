@@ -117,6 +117,11 @@ class _JobCardState extends State<JobCard> {
             const SizedBox(width: 8),
             Text(job.elapsedLabel,
                 style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
+            if (job.etaLabel != null) ...[
+              const SizedBox(width: 8),
+              Text('ETA ${job.etaLabel}',
+                  style: const TextStyle(color: Color(0xFF6f7888), fontSize: 10, fontFamily: 'monospace')),
+            ],
             const Spacer(),
             if (job.status == JobStatus.queued || job.status == JobStatus.running)
               TextButton(

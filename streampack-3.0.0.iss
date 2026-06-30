@@ -2,18 +2,18 @@
 ; StreamPack — Inno Setup installer script
 ;
 ; Usage (from the streampack-desktop directory):
-;   iscc streampack.iss
+;   iscc streampack-3.0.0.iss
 ;
 ; Prerequisites:
 ;   1. flutter build windows --release  (produces build\windows\x64\runner\Release\)
 ;   2. Inno Setup 6+ installed          (https://jrsoftware.org/isinfo.php)
 ;
 ; Output:
-;   installer\StreamPack-2.0.0-Setup.exe
+;   installer\StreamPack-3.0.0-Setup.exe
 ; ============================================================================
 
 #define AppName      "StreamPack"
-#define AppVersion   "2.0.0"
+#define AppVersion   "3.0.0"
 #define AppPublisher "Hervé Jourdain"
 #define AppURL       "https://github.com/hjourdain-ryvr/streampack-desktop"
 #define AppExeName   "streampack.exe"

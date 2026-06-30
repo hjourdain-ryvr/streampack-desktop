@@ -192,7 +192,9 @@ class JobRunner extends ChangeNotifier {
               quality: job.quality,
               output: output,
               inputColor: job.inputColor,
-              hdrMeta: job.hdrMeta)
+              hdrMeta: job.hdrMeta,
+              audioPlan: job.audioPlan,
+              videoQuality: job.videoQuality)
           : buildDashCmd(
               input: job.input, outputDir: outDir,
               resolutions: job.activeResolutions,
@@ -201,7 +203,9 @@ class JobRunner extends ChangeNotifier {
               quality: job.quality,
               output: output,
               inputColor: job.inputColor,
-              hdrMeta: job.hdrMeta);
+              hdrMeta: job.hdrMeta,
+              audioPlan: job.audioPlan,
+              videoQuality: job.videoQuality);
 
       final success = await _runPass(
         job: job, cmd: cmd, pass: pass,

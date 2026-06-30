@@ -1,7 +1,7 @@
 name: streampack
 description: HLS + DASH encoder and validator desktop app
 publish_to: none
-version: 2.0.0+5
+version: 3.0.0+6
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -21,6 +21,9 @@ dependencies:
 
   # Window title bar / size control on desktop
   window_manager: ^0.3.9
+
+  # App version from the build (so the About text tracks pubspec, not hardcoded)
+  package_info_plus: ^8.0.0
 
 dev_dependencies:
   flutter_test:

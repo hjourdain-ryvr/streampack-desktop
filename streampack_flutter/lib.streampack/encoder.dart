@@ -147,6 +147,72 @@ Future<HdrMetadata?> probeHdrMetadata(String input) async {
   }
 }
 
+/// Probe the full stream layout of a source (video colour, audio tracks,
+/// subtitle tracks) for the 3.0.0 Advanced tab. Falls back to an SDR-8 / empty
+/// result on any failure.
+Future<MediaStreams> probeMediaStreams(String input) async {
+  try {
+    final res = await Process.run(ffprobePath(), [
+      '-v', 'error',
+      '-show_entries',
+      'stream=index,codec_type,codec_name,profile,channels,channel_layout,'
+          'pix_fmt,color_transfer:stream_tags=language,title:stream_disposition=default',
+      '-of', 'json', input,
+      // ffprobe emits UTF-8; force UTF-8 decoding so track titles with accents
+      // (e.g. "Stéréo") are not mangled by the platform's default codepage.
+    ], stdoutEncoding: utf8).timeout(const Duration(seconds: 15));
+    if (res.exitCode != 0) return const MediaStreams(color: InputColor.sdr8);
+
+    final data    = jsonDecode(res.stdout as String) as Map<String, dynamic>;
+    final streams = (data['streams'] as List?) ?? const [];
+
+    var color = InputColor.sdr8;
+    var sawVideo = false;
+    final audio = <AudioTrack>[];
+    final subs  = <SubtitleTrack>[];
+    var aOrder = 0, sOrder = 0;
+
+    for (final s in streams) {
+      final m    = s as Map<String, dynamic>;
+      final type = m['codec_type'] as String?;
+      final tags = (m['tags'] as Map?) ?? const {};
+      if (type == 'video' && !sawVideo) {
+        sawVideo = true;
+        color = InputColor.classify(
+          pixFmt: m['pix_fmt'] as String?,
+          colorTransfer: m['color_transfer'] as String?,
+        );
+      } else if (type == 'audio') {
+        final disp = (m['disposition'] as Map?) ?? const {};
+        audio.add(AudioTrack(
+          index: (m['index'] as num?)?.toInt() ?? 0,
+          order: aOrder++,
+          codec: (m['codec_name'] as String?) ?? 'unknown',
+          profile: m['profile'] as String?,
+          channels: (m['channels'] as num?)?.toInt() ?? 0,
+          channelLayout: m['channel_layout'] as String?,
+          language: tags['language'] as String?,
+          title: tags['title'] as String?,
+          isDefault: disp['default'] == 1,
+        ));
+      } else if (type == 'subtitle') {
+        subs.add(SubtitleTrack(
+          index: (m['index'] as num?)?.toInt() ?? 0,
+          order: sOrder++,
+          codec: (m['codec_name'] as String?) ?? 'unknown',
+          language: tags['language'] as String?,
+          title: tags['title'] as String?,
+        ));
+      }
+    }
+
+    final hdr = color == InputColor.hdr ? await probeHdrMetadata(input) : null;
+    return MediaStreams(color: color, hdr: hdr, audio: audio, subtitles: subs);
+  } catch (_) {
+    return const MediaStreams(color: InputColor.sdr8);
+  }
+}
+
 /// Concrete output characteristics derived from the chosen [VideoOutput] and
 /// the probed [InputColor]. H.264 is always 8-bit; H.265 preserves the input's
 /// bit-depth (and HDR signal for H.265 HDR).
@@ -175,27 +241,64 @@ class _OutSpec {
 /// - [gpuFrames] true when frames are already in CUDA memory (DASH NVENC path),
 ///   where scale_cuda sets the pixel format; otherwise we set -pix_fmt here so
 ///   10-bit is preserved and 10-bit-SDR→H.264 is reduced 10→8.
+int _kbpsOf(String br) => int.tryParse(br.replaceAll(RegExp(r'[^\d]'), '')) ?? 5000;
+
+String _scaledVideoBitrate(int anchor4kKbps, Preset r, bool hdr) =>
+    '${scaledVideoBitrateKbps(anchor4kKbps, r.width, r.height, hdr: hdr)}k';
+
+/// Rate-control args for stream [i].
+/// - vq == null            -> legacy fixed per-preset bitrate (2.0.0, unchanged)
+/// - vq bitrate mode       -> scaled 4K anchor with VBV cap
+/// - vq crf mode           -> constant CRF/CQ (same every rung) + generous cap
+List<String> _rateCtl(int i, Preset r, _OutSpec spec, VideoQuality? vq,
+    {required bool nvenc}) {
+  if (vq != null && vq.mode == VideoQualityMode.crf) {
+    // Generous safety cap (top anchor scaled) so a pathological segment can't
+    // blow past the rung's budget; normally it never binds.
+    final cap  = _scaledVideoBitrate(
+        spec.hevc ? kHevcBitrateAnchorsKbps.first : kAvcBitrateAnchorsKbps.first,
+        r, spec.hdr);
+    final buf  = '${_kbpsOf(cap) * 2}k';
+    if (nvenc) {
+      return ['-rc:v:$i', 'vbr', '-cq:v:$i', '${vq.crf}', '-b:v:$i', '0',
+              '-maxrate:v:$i', cap, '-bufsize:v:$i', buf];
+    }
+    return ['-crf:v:$i', '${vq.crf}', '-maxrate:v:$i', cap, '-bufsize:v:$i', buf];
+  }
+  // Bitrate mode (override or legacy preset ladder)
+  final br  = vq != null ? _scaledVideoBitrate(vq.bitrate4kKbps, r, spec.hdr)
+                         : r.videoBitrate;
+  final buf = '${_kbpsOf(br) * 2}k';
+  if (nvenc) {
+    return ['-rc:v:$i', 'vbr', '-b:v:$i', br,
+            '-maxrate:v:$i', br, '-bufsize:v:$i', buf];
+  }
+  // CPU: keep the legacy single-arg form when no override (byte-identical);
+  // add a VBV cap when the user set an explicit bitrate.
+  return vq != null
+      ? ['-b:v:$i', br, '-maxrate:v:$i', br, '-bufsize:v:$i', buf]
+      : ['-b:v:$i', br];
+}
+
 List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
     {required bool nvenc, required bool gpuFrames,
-     required EncodeQuality quality, HdrMetadata? hdr}) {
-  final br     = r.videoBitrate;
-  final brVal  = int.tryParse(br.replaceAll(RegExp(r'[^\d]'), '')) ?? 5000;
-  final unit   = br.replaceAll(RegExp(r'[\d]'), '');
-  final bufsize = '${brVal * 2}$unit';
-
+     required EncodeQuality quality, HdrMetadata? hdr, VideoQuality? vq}) {
+  // Effort/preset: Advanced override carries its own; Basic uses EncodeQuality.
+  final nvPreset  = vq?.effort.nvencPreset ?? quality.nvencPreset;
+  final cpuPreset = vq?.effort.cpuPreset   ?? quality.x264Preset;
   if (nvenc) {
     final codec   = spec.hevc ? 'hevc_nvenc' : 'h264_nvenc';
     final profile = spec.hevc ? (spec.tenBit ? 'main10' : 'main') : 'high';
     return [
       '-c:v:$i', codec,
-      '-preset:v:$i', quality.nvencPreset,
+      '-preset:v:$i', nvPreset,
       '-tune:v:$i', 'hq',
       '-profile:v:$i', profile,
-      '-rc:v:$i', 'vbr',
-      '-b:v:$i', br,
-      '-maxrate:v:$i', br,
-      '-bufsize:v:$i', bufsize,
+      ..._rateCtl(i, r, spec, vq, nvenc: true),
       if (!gpuFrames) ...['-pix_fmt:v:$i', spec.cpuPixFmt],
+      // hvc1 (params in init) is required by Apple HLS for HEVC and makes ffmpeg
+      // emit the CODECS string in the master playlist.
+      if (spec.hevc) ...['-tag:v:$i', 'hvc1'],
       if (spec.hdr) ...[
         '-colorspace:v:$i', 'bt2020nc',
         '-color_primaries:v:$i', 'bt2020',
@@ -217,8 +320,9 @@ List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
       '-c:v:$i', 'libx265',
       '-preset:v:$i', quality.x264Preset,
       '-pix_fmt:v:$i', spec.cpuPixFmt,
+      '-tag:v:$i', 'hvc1',   // Apple-HLS-compatible HEVC tag + emits CODECS
       '-x265-params:v:$i', params.join(':'),
-      '-b:v:$i', br,
+      ..._rateCtl(i, r, spec, vq, nvenc: false),
     ];
   }
 
@@ -226,11 +330,99 @@ List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
     '-c:v:$i', 'libx264',
     '-preset:v:$i', quality.x264Preset,
     '-pix_fmt:v:$i', 'yuv420p',
-    '-b:v:$i', br,
+    ..._rateCtl(i, r, spec, vq, nvenc: false),
   ];
 }
 
 
+
+// === Multi-audio (3.0.0 Advanced tab) =======================================
+// Used only when a Job carries a non-empty audioPlan. With an empty plan the
+// 2.0.0 single-audio path (audio muxed per video rendition) is used unchanged.
+
+/// Video-only per-rendition map + encoder args (HLS CPU-frame path), i.e. the
+/// 2.0.0 _streamArgs without the muxed audio - audio is added separately as
+/// alternate renditions.
+List<String> _videoStreamArgs(List<Preset> resolutions, _OutSpec spec,
+    {required bool nvenc, required EncodeQuality quality, HdrMetadata? hdr,
+     VideoQuality? vq}) {
+  final args = <String>[];
+  for (var i = 0; i < resolutions.length; i++) {
+    args.addAll([
+      '-map', '[scaled$i]',
+      ..._videoEncoderArgs(i, resolutions[i], spec,
+          nvenc: nvenc, gpuFrames: false, quality: quality, hdr: hdr, vq: vq),
+    ]);
+  }
+  return args;
+}
+
+/// Audio output args (maps + per-track codec) for a stream plan. Audio output
+/// streams follow the video streams; codec options use the audio-type index
+/// (a:0, a:1, ...) in the order kept tracks are mapped.
+List<String> _audioPlanArgs(List<AudioSelection> kept) {
+  final args = <String>[];
+  for (final s in kept) {
+    args.addAll(['-map', '0:a:${s.sourceOrder}?']);
+  }
+  for (var i = 0; i < kept.length; i++) {
+    final s = kept[i];
+    if (s.action == AudioAction.passthrough) {
+      args.addAll(['-c:a:$i', 'copy']);
+    } else {
+      final stereo = s.channels == AudioChannelMode.stereo;
+      args.addAll([
+        '-c:a:$i', s.target.encoder,
+        if (stereo) ...['-ac:$i', '2'],
+        '-b:a:$i', stereo ? '128k' : '384k',
+        '-ar:$i', '44100',
+      ]);
+    }
+  }
+  return args;
+}
+
+/// var_stream_map for HLS alternate-audio rendition groups: each video variant
+/// references the audio group; each kept audio track is a group member with its
+/// language and default flag. Audio output index = audio order among kept tracks.
+String _hlsVarStreamMapMulti(List<Preset> resolutions, List<AudioSelection> kept) {
+  if (kept.isEmpty) {
+    // All audio removed -> video-only variants, no audio group.
+    return [
+      for (var i = 0; i < resolutions.length; i++) 'v:$i,name:${resolutions[i].height}p',
+    ].join(' ');
+  }
+  const grp = 'aud';
+  // Exactly one audio rendition must be DEFAULT=YES and the rest explicitly
+  // DEFAULT=NO. If none is flagged (e.g. the source default track was removed),
+  // fall back to the first kept track. Omitting default entirely makes ffmpeg
+  // mark them ALL default AND emit bogus audio STREAM-INF variants -> players
+  // show garbled audio track lists and fail to play audio.
+  var defIdx = kept.indexWhere((a) => a.isDefault);
+  if (defIdx < 0) defIdx = 0;
+  final parts = <String>[
+    for (var i = 0; i < resolutions.length; i++)
+      'v:$i,agroup:$grp,name:${resolutions[i].height}p',
+    for (var i = 0; i < kept.length; i++)
+      'a:$i,agroup:$grp'
+      '${kept[i].language != null ? ',language:${kept[i].language}' : ''}'
+      ',default:${i == defIdx ? 'yes' : 'no'}'
+      ',name:a${i}_${kept[i].language ?? 'und'}',
+  ];
+  return parts.join(' ');
+}
+
+/// adaptation_sets for DASH: all video renditions in one set (ABR ladder),
+/// each kept audio track in its own set. Output stream indices: video 0..n-1,
+/// audio n..n+k-1.
+String _dashAdaptationSetsMulti(int videoCount, int audioCount) {
+  final videoIdx = [for (var i = 0; i < videoCount; i++) i].join(',');
+  final sets = <String>['id=0,streams=$videoIdx'];
+  for (var i = 0; i < audioCount; i++) {
+    sets.add('id=${i + 1},streams=${videoCount + i}');
+  }
+  return sets.join(' ');
+}
 
 List<String> _filterComplexArgs(List<Preset> resolutions) {
   final n = resolutions.length;
@@ -262,14 +454,15 @@ String _scaleFilterFromSplit(int i, Preset r) {
 }
 
 List<String> _streamArgs(List<Preset> resolutions, _OutSpec spec,
-    {required bool nvenc, required EncodeQuality quality, HdrMetadata? hdr}) {
+    {required bool nvenc, required EncodeQuality quality, HdrMetadata? hdr,
+     VideoQuality? vq}) {
   final args = <String>[];
   for (var i = 0; i < resolutions.length; i++) {
     final r = resolutions[i];
     args.addAll([
       '-map', '[scaled$i]', '-map', '0:a:0?',
       ..._videoEncoderArgs(i, r, spec,
-          nvenc: nvenc, gpuFrames: false, quality: quality, hdr: hdr),
+          nvenc: nvenc, gpuFrames: false, quality: quality, hdr: hdr, vq: vq),
       '-c:a:$i', 'aac', '-b:a:$i', r.audioBitrate,
       '-ac:$i', '2',
       '-ar:$i', '44100',
@@ -293,6 +486,8 @@ List<String> buildHlsCmd({
   required VideoOutput output,
   required InputColor inputColor,
   HdrMetadata? hdrMeta,
+  List<AudioSelection> audioPlan = const [],
+  VideoQuality? videoQuality,
 }) {
   final stem   = sanitiseStem(input);
   // Use forward slashes for all HLS output paths. ffmpeg derives the fMP4
@@ -315,21 +510,84 @@ List<String> buildHlsCmd({
           '-hls_segment_filename', '$segDir/${stem}_%v_%03d.ts',
         ];
 
-  return [
-    ffmpegPath(), '-y', '-i', input,
-    '-sn', '-dn',
-    ..._filterComplexArgs(resolutions),
-    ..._streamArgs(resolutions, spec, nvenc: nvenc, quality: quality, hdr: hdrMeta),
+  final common = <String>[
     '-f', 'hls',
     '-hls_time', '$segmentDuration',
     '-hls_playlist_type', 'vod',
     '-hls_flags', 'independent_segments',
     ...segArgs,
     '-master_pl_name', 'master.m3u8',
-    '-var_stream_map',
-    resolutions.map((r) => 'v:${resolutions.indexOf(r)},a:${resolutions.indexOf(r)},name:${r.height}p').join(' '),
+  ];
+
+  // Empty plan -> 2.0.0 path: single audio muxed into each video rendition.
+  if (audioPlan.isEmpty) {
+    return [
+      ffmpegPath(), '-y', '-i', input,
+      '-sn', '-dn',
+      ..._filterComplexArgs(resolutions),
+      ..._streamArgs(resolutions, spec, nvenc: nvenc, quality: quality, hdr: hdrMeta, vq: videoQuality),
+      ...common,
+      '-var_stream_map',
+      resolutions.map((r) => 'v:${resolutions.indexOf(r)},a:${resolutions.indexOf(r)},name:${r.height}p').join(' '),
+      '$segDir/${stem}_%v.m3u8',
+    ];
+  }
+
+  // Multi-audio path: video-only variants + alternate audio rendition group.
+  final kept = audioPlan.where((s) => s.action != AudioAction.remove).toList();
+  return [
+    ffmpegPath(), '-y', '-i', input,
+    '-sn', '-dn',
+    ..._filterComplexArgs(resolutions),
+    ..._videoStreamArgs(resolutions, spec, nvenc: nvenc, quality: quality, hdr: hdrMeta, vq: videoQuality),
+    ..._audioPlanArgs(kept),
+    ...common,
+    '-var_stream_map', _hlsVarStreamMapMulti(resolutions, kept),
     '$segDir/${stem}_%v.m3u8',
   ];
+}
+
+// ISO 639-2 -> display name (common subset; falls back to the uppercase code).
+const _audioLangNames = <String, String>{
+  'eng':'English','fra':'French','fre':'French','spa':'Spanish','deu':'German','ger':'German',
+  'ita':'Italian','por':'Portuguese','rus':'Russian','jpn':'Japanese','kor':'Korean',
+  'zho':'Chinese','chi':'Chinese','nld':'Dutch','dut':'Dutch','swe':'Swedish','nor':'Norwegian',
+  'dan':'Danish','fin':'Finnish','pol':'Polish','ces':'Czech','cze':'Czech','tha':'Thai',
+  'ara':'Arabic','hin':'Hindi','heb':'Hebrew','tur':'Turkish','ell':'Greek','hun':'Hungarian',
+  'ron':'Romanian','ukr':'Ukrainian','vie':'Vietnamese','ind':'Indonesian',
+};
+
+String _channelLabel(String? ch) => switch (ch) {
+  '1' => 'Mono', '2' => 'Stereo', '6' => '5.1', '8' => '7.1',
+  _   => (ch != null && ch.isNotEmpty) ? '${ch}ch' : '',
+};
+
+/// Rewrite an #EXT-X-MEDIA:TYPE=AUDIO line: (1) NAME from ffmpeg's auto "audio_N"
+/// to a friendly "<Language> <layout>" label (e.g. "English 5.1"), de-duplicated
+/// via [used] (appends " (2)", " (3)", ...); (2) prefix the rendition URI with
+/// the [stem] subdirectory so it matches where the audio playlists actually live
+/// (same prefix the video variant URIs get). Without (2) players load the video
+/// but fail to find the audio -> video plays with NO sound.
+String _friendlyAudioMediaLine(String line, Set<String> used, String stem) {
+  final lang = RegExp(r'LANGUAGE="([^"]*)"').firstMatch(line)?.group(1);
+  final ch   = RegExp(r'CHANNELS="([^"]*)"').firstMatch(line)?.group(1);
+  final langName = (lang == null || lang.isEmpty || lang == 'und')
+      ? '' : (_audioLangNames[lang] ?? lang.toUpperCase());
+  final parts = [langName, _channelLabel(ch)].where((s) => s.isNotEmpty).toList();
+  var name = parts.isEmpty ? 'Audio' : parts.join(' ');
+  if (used.contains(name)) {
+    var n = 2;
+    while (used.contains('$name ($n)')) { n++; }
+    name = '$name ($n)';
+  }
+  used.add(name);
+  var out = line.replaceFirst(RegExp(r'NAME="[^"]*"'), 'NAME="$name"');
+  out = out.replaceFirstMapped(RegExp(r'URI="([^"]+)"'), (m) {
+    final u = m.group(1)!;
+    return (u.endsWith('.m3u8') && !u.startsWith('$stem/'))
+        ? 'URI="$stem/$u"' : 'URI="$u"';
+  });
+  return out;
 }
 
 /// Move master.m3u8 from <segDir> to <outputDir>/<stem>.m3u8 and rewrite
@@ -351,6 +609,7 @@ Future<void> promoteHlsMaster({
   // Each variant block = one #EXT-X-STREAM-INF line + one URI line.
   final header  = <String>[];   // lines before first variant
   final variants = <({String inf, String uri})>[];
+  final usedAudioNames = <String>{};  // for de-duplicating friendly NAMEs
   String? pendingInf;
   bool inVariants = false;
 
@@ -366,7 +625,11 @@ Future<void> promoteHlsMaster({
       variants.add((inf: pendingInf!, uri: uri));
       pendingInf = null;
     } else if (!inVariants) {
-      header.add(line);
+      // Replace ffmpeg's auto "audio_N" NAME with a friendly language+layout
+      // label (e.g. "English 5.1"), de-duplicated.
+      header.add(t.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')
+          ? _friendlyAudioMediaLine(line, usedAudioNames, stem)
+          : line);
     }
   }
 
@@ -409,38 +672,62 @@ List<String> buildDashCmd({
   required VideoOutput output,
   required InputColor inputColor,
   HdrMetadata? hdrMeta,
+  List<AudioSelection> audioPlan = const [],
+  VideoQuality? videoQuality,
 }) {
   final stem   = sanitiseStem(input);
-  final segDir = '$outputDir${Platform.pathSeparator}$stem';
+  final sep    = Platform.pathSeparator;
+  final segDir = '$outputDir$sep$stem';
   final n      = resolutions.length;
   final spec   = _OutSpec.from(output, inputColor);
 
   const repId = r'$RepresentationID$';
   const num   = r'$Number$';
 
+  // Empty plan -> 2.0.0 single-audio (one AdaptationSet for all audio, muxed per
+  // rendition). Non-empty -> one AdaptationSet per kept track (validated: all
+  // video renditions share one set; app presets are all 16:9).
+  final multi = audioPlan.isNotEmpty;
+  final kept  = audioPlan.where((s) => s.action != AudioAction.remove).toList();
+
+  // DASH uses absolute seg names with the platform separator. On Windows this is
+  // correct (the muxer does not re-prepend a drive-letter path); the deploy
+  // target is Windows. (2.0.0 validated.)
+  final dashTail = <String>[
+    '-f', 'dash',
+    '-seg_duration', '$segmentDuration',
+    '-use_timeline', '1',
+    '-use_template', '1',
+    '-init_seg_name',  '$segDir$sep${stem}_${repId}_init.mp4',
+    '-media_seg_name', '$segDir$sep${stem}_${repId}_${num}.m4s',
+    '-adaptation_sets',
+    multi ? _dashAdaptationSetsMulti(n, kept.length) : 'id=0,streams=v id=1,streams=a',
+    '$segDir$sep$stem.mpd',
+  ];
+
   final List<String> cmd;
 
   if (nvenc) {
     // ── NVENC path: per-stream mapping with scale_cuda + setsar ──────────────
-    // Uses -map 0:v:0 per output stream with -filter:v:N per stream.
-    // scale_cuda requires named w=/h= syntax, not positional.
-    // setsar=1 normalises SAR so DASH muxer sees identical aspect ratios.
+    // Video uses -map 0:v:0 per output with -filter:v:N. Audio is muxed per
+    // rendition (2.0.0) or mapped separately as alternate tracks (multi).
     final maps    = <String>[];
     final filters = <String>[];
     final encArgs = <String>[];
 
     for (var i = 0; i < n; i++) {
-      maps.addAll(['-map', '0:v:0', '-map', '0:a:0?']);
+      maps.addAll(['-map', '0:v:0']);
+      if (!multi) maps.addAll(['-map', '0:a:0?']);
       filters.addAll(['-filter:v:$i',
           'scale_cuda=${resolutions[i].width}:${resolutions[i].height}:format=${spec.cudaPixFmt},setsar=1']);
       encArgs.addAll(_videoEncoderArgs(i, resolutions[i], spec,
-          nvenc: true, gpuFrames: true, quality: quality, hdr: hdrMeta));
-      encArgs.addAll([
-        '-c:a:$i', 'aac',
-        '-b:a:$i', resolutions[i].audioBitrate,
-        '-ac:$i', '2',
-        '-ar:$i', '44100',
-      ]);
+          nvenc: true, gpuFrames: true, quality: quality, hdr: hdrMeta, vq: videoQuality));
+      if (!multi) {
+        encArgs.addAll([
+          '-c:a:$i', 'aac', '-b:a:$i', resolutions[i].audioBitrate,
+          '-ac:$i', '2', '-ar:$i', '44100',
+        ]);
+      }
     }
 
     cmd = [
@@ -452,14 +739,8 @@ List<String> buildDashCmd({
       ...maps,
       ...filters,
       ...encArgs,
-      '-f', 'dash',
-      '-seg_duration', '$segmentDuration',
-      '-use_timeline', '1',
-      '-use_template', '1',
-      '-init_seg_name',  '$segDir${Platform.pathSeparator}${stem}_${repId}_init.mp4',
-      '-media_seg_name', '$segDir${Platform.pathSeparator}${stem}_${repId}_${num}.m4s',
-      '-adaptation_sets', 'id=0,streams=v id=1,streams=a',
-      '$segDir${Platform.pathSeparator}$stem.mpd',
+      if (multi) ..._audioPlanArgs(kept),
+      ...dashTail,
     ];
   } else {
     // ── CPU path: filter graph with split → scale ────────────────────────────
@@ -473,12 +754,12 @@ List<String> buildDashCmd({
 
     final maps = <String>[
       for (var i = 0; i < n; i++) ...[ '-map', '[scaled$i]' ],
-      '-map', '0:a:0?',
+      if (!multi) ...['-map', '0:a:0?'],
     ];
     final videoArgs = <String>[
       for (var i = 0; i < n; i++)
         ..._videoEncoderArgs(i, resolutions[i], spec,
-            nvenc: false, gpuFrames: false, quality: quality, hdr: hdrMeta),
+            nvenc: false, gpuFrames: false, quality: quality, hdr: hdrMeta, vq: videoQuality),
     ];
 
     cmd = [
@@ -487,18 +768,12 @@ List<String> buildDashCmd({
       '-filter_complex', filterComplex,
       ...maps,
       ...videoArgs,
-      '-c:a:$n', 'aac',
-      '-b:a:$n', resolutions.first.audioBitrate,
-      '-ac:$n', '2',
-      '-ar:$n', '44100',
-      '-f', 'dash',
-      '-seg_duration', '$segmentDuration',
-      '-use_timeline', '1',
-      '-use_template', '1',
-      '-init_seg_name',  '$segDir${Platform.pathSeparator}${stem}_${repId}_init.mp4',
-      '-media_seg_name', '$segDir${Platform.pathSeparator}${stem}_${repId}_${num}.m4s',
-      '-adaptation_sets', 'id=0,streams=v id=1,streams=a',
-      '$segDir${Platform.pathSeparator}$stem.mpd',
+      if (!multi) ...[
+        '-c:a:$n', 'aac', '-b:a:$n', resolutions.first.audioBitrate,
+        '-ac:$n', '2', '-ar:$n', '44100',
+      ],
+      if (multi) ..._audioPlanArgs(kept),
+      ...dashTail,
     ];
   }
 
@@ -549,6 +824,33 @@ Future<void> promoteDashManifest({
   for (final node in doc.findAllElements('Initialization')) {
     final val = node.getAttribute('sourceURL');
     if (val != null) node.setAttribute('sourceURL', _toRelative(val));
+  }
+
+  // Add a human <Label> to each audio AdaptationSet so players show distinct,
+  // readable names (e.g. "English 5.1") instead of several identical "eng"
+  // entries. Built from lang + channel layout, de-duplicated. Mirrors the
+  // friendly HLS rendition names so a track is labelled the same in both.
+  final usedDashNames = <String>{};
+  for (final as in doc.findAllElements('AdaptationSet')) {
+    if (as.getAttribute('contentType') != 'audio') continue;
+    final lang = as.getAttribute('lang');
+    String? ch;
+    for (final e in as.findAllElements('AudioChannelConfiguration')) {
+      ch = e.getAttribute('value');
+      if (ch != null) break;
+    }
+    final langName = (lang == null || lang.isEmpty || lang == 'und')
+        ? '' : (_audioLangNames[lang] ?? lang.toUpperCase());
+    final parts = [langName, _channelLabel(ch)].where((s) => s.isNotEmpty).toList();
+    var name = parts.isEmpty ? 'Audio' : parts.join(' ');
+    if (usedDashNames.contains(name)) {
+      var k = 2;
+      while (usedDashNames.contains('$name ($k)')) { k++; }
+      name = '$name ($k)';
+    }
+    usedDashNames.add(name);
+    as.children.removeWhere((n) => n is XmlElement && n.name.local == 'Label');
+    as.children.insert(0, XmlElement(XmlName('Label'), [], [XmlText(name)]));
   }
 
   await dstMpd.writeAsString(doc.toXmlString(pretty: false));

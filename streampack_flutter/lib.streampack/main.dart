@@ -2,11 +2,19 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'job_runner.dart';
 import 'ui/app.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Single source of truth for the version: read it from the build (pubspec).
+  try {
+    final info = await PackageInfo.fromPlatform();
+    if (info.version.isNotEmpty) kAppVersion = info.version;
+  } catch (_) {}
+
   await windowManager.ensureInitialized();
 
   // waitUntilReadyToShow hides the window until the Flutter engine signals
@@ -14,8 +22,8 @@ void main() async {
   // This is the officially supported way to prevent the startup flash.
   windowManager.waitUntilReadyToShow(
     const WindowOptions(
-      size: Size(1280, 1060),
-      minimumSize: Size(900, 980),
+      size: Size(1280, 1120),
+      minimumSize: Size(900, 1040),
       center: true,
       title: 'StreamPack',
     ),

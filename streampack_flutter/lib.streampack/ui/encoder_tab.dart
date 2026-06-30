@@ -6,7 +6,7 @@ import '../models.dart';
 import '../job_runner.dart';
 import '../ffmpeg.dart';
 import '../l10n.dart';
-import '../encoder.dart' show sanitiseStem, nvencAvailable, probeInputColor;
+import '../encoder.dart' show nvencAvailable, probeInputColor, probeMediaStreams;
 import 'job_card.dart';
 
 class EncoderTab extends StatefulWidget {
@@ -19,6 +19,12 @@ class _EncoderTabState extends State<EncoderTab> {
   final _inputCtrl   = TextEditingController();
   final _hlsDirCtrl  = TextEditingController();
   final _dashDirCtrl = TextEditingController();
+  // Track which output-dir fields the user set explicitly, so a single entered
+  // path can become the default for the other format(s) instead of the app
+  // default. _syncingDirs guards programmatic writes from flipping the flags.
+  bool _hlsDirUserSet  = false;
+  bool _dashDirUserSet = false;
+  bool _syncingDirs    = false;
   EncodeFormat  _format  = EncodeFormat.hls;
   EncodeQuality _quality = EncodeQuality.balanced;
   InputColor    _inputColor = InputColor.sdr8;
@@ -30,6 +36,24 @@ class _EncoderTabState extends State<EncoderTab> {
   List<String> _selectedFiles = []; // empty = use _inputCtrl text
   bool _suppressInputListener = false;
 
+  // Advanced tab (single-file only): probed streams + per-track audio plan.
+  MediaStreams? _streams;
+  List<AudioSelection> _audioPlan = [];
+  int _configTab = 0; // 0 = Basic, 1 = Advanced
+  int _advTab = 0;    // 0 = Audio, 1 = Video, 2 = Subtitles
+
+  // Advanced video quality. Applies only once the user engages these controls
+  // (_vqTouched); otherwise the Basic preset bitrate ladder is used unchanged.
+  VideoQualityMode _vqMode = VideoQualityMode.bitrate;
+  int  _vqBitrate4k = kHevcDefaultAnchorKbps;
+  int  _vqCrf       = kDefaultCrf;
+  VideoEffort _vqEffort = VideoEffort.balanced;
+  bool _vqTouched   = false;
+
+  bool get _isAvc => _output == VideoOutput.h264Sdr;
+  List<int> get _anchorList =>
+      _isAvc ? kAvcBitrateAnchorsKbps : kHevcBitrateAnchorsKbps;
+
   bool _wouldUpscale(int i) => _srcHeight > 0 && kPresets[i].height > _srcHeight;
 
   String _inputColorLabel(InputColor c) => switch (c) {
@@ -38,15 +62,390 @@ class _EncoderTabState extends State<EncoderTab> {
     InputColor.hdr   => 'HDR (10-bit)',
   };
 
+  // ── Basic config form (the 2.0.0 settings) ────────────────────────────────
+  List<Widget> _basicForm(AppLocalizations l, Color accent) => [
+    _SectionLabel(l.encSource),
+    const SizedBox(height: 12),
+    _PathField(controller: _inputCtrl, hint: l.encInputHint, label: l.encInputFile,
+        onBrowse: _pickInput, browseIcon: Icons.video_file_outlined),
+    if (_srcWidth > 0) ...[
+      const SizedBox(height: 4),
+      Row(children: [
+        const Icon(Icons.info_outline, size: 11, color: Color(0xFF9aa3b8)),
+        const SizedBox(width: 4),
+        Expanded(child: Text(
+          _selectedFiles.length > 1
+              ? 'Min source: ${_srcWidth}x$_srcHeight'
+              : '${l.encSourceSize}: ${_srcWidth}x$_srcHeight',
+          style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace'))),
+      ]),
+    ],
+    const SizedBox(height: 16),
+    _SectionLabel(l.encFormat),
+    const SizedBox(height: 12),
+    _FormatToggle(value: _format, bothLabel: l.encFormatBoth,
+        onChanged: (f) => setState(() { _format = f; _syncDirDefaults(); })),
+    const SizedBox(height: 16),
+    _SectionLabel(l.encQuality),
+    const SizedBox(height: 12),
+    _QualityToggle(value: _quality, balancedLabel: l.encQualityBalanced, highLabel: l.encQualityBest,
+        onChanged: (q) => setState(() => _quality = q)),
+    const SizedBox(height: 16),
+    _SectionLabel(l.encVideoOutput),
+    const SizedBox(height: 12),
+    _OutputToggle(value: _output, valid: _inputColor.validOutputs,
+        onChanged: (o) => setState(() {
+          _output = o;
+          // Bitrate anchors differ by codec; snap to the codec default if the
+          // current anchor isn't in the new codec's list.
+          if (!_anchorList.contains(_vqBitrate4k)) {
+            _vqBitrate4k = _isAvc ? kAvcDefaultAnchorKbps : kHevcDefaultAnchorKbps;
+          }
+        })),
+    if (_srcWidth > 0) ...[
+      const SizedBox(height: 4),
+      Row(children: [
+        const Icon(Icons.palette_outlined, size: 11, color: Color(0xFF9aa3b8)),
+        const SizedBox(width: 4),
+        Text('${l.encDetected}: ${_inputColorLabel(_inputColor)}',
+            style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
+      ]),
+    ],
+    const SizedBox(height: 16),
+    if (_format != EncodeFormat.dash) ...[
+      _PathField(controller: _hlsDirCtrl, hint: '/srv/hls/streams',
+          label: _format == EncodeFormat.both ? l.encHlsOutputDir : l.encOutputDir,
+          onBrowse: _pickHlsDir, browseIcon: Icons.folder_outlined),
+      const SizedBox(height: 12),
+    ],
+    if (_format != EncodeFormat.hls) ...[
+      _PathField(controller: _dashDirCtrl, hint: '/srv/dash/streams',
+          label: _format == EncodeFormat.both ? l.encDashOutputDir : l.encOutputDir,
+          onBrowse: _pickDashDir, browseIcon: Icons.folder_outlined),
+      const SizedBox(height: 16),
+    ],
+    const Divider(), const SizedBox(height: 12),
+    _SectionLabel(l.encRenditions),
+    const SizedBox(height: 12),
+    _ResolutionGrid(selected: _selectedPresets, srcWidth: _srcWidth, srcHeight: _srcHeight,
+        upscaleTooltipFn: l.upscaleTooltip, upscaleLabel: l.upscaleLabel,
+        onToggle: (i) => setState(() {
+          if (_wouldUpscale(i)) return;
+          _selectedPresets.contains(i) ? _selectedPresets.remove(i) : _selectedPresets.add(i);
+        })),
+    const Divider(), const SizedBox(height: 12),
+    _SectionLabel(l.encSegmentDuration),
+    const SizedBox(height: 12),
+    Row(children: [
+      Expanded(child: Slider(value: _segmentDuration, min: 2, max: 12, divisions: 10,
+          activeColor: accent, onChanged: (v) => setState(() => _segmentDuration = v))),
+      SizedBox(width: 40, child: Text('${_segmentDuration.round()}s',
+          style: TextStyle(color: accent, fontFamily: 'monospace', fontSize: 12))),
+    ]),
+  ];
+
+  // ── Advanced form (per-track audio / video / subtitles) ────────────────────
+  // Single-file only; Audio is functional, Subtitles read-only, Video a summary.
+  List<Widget> _advancedForm(AppLocalizations l) {
+    final s = _streams;
+    if (s == null) {
+      return [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Text(l.encAdvancedNeedsFile,
+              style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 12, fontStyle: FontStyle.italic)),
+        ),
+      ];
+    }
+    return [
+      _SubTabToggle(index: _advTab, labels: [l.encAudioTab, l.encVideoTab, l.encSubtitlesTab],
+          onChanged: (i) => setState(() => _advTab = i)),
+      const SizedBox(height: 12),
+      if (_advTab == 0) ..._audioSubTab(s, l),
+      if (_advTab == 1) ..._videoSubTab(l),
+      if (_advTab == 2) ..._subtitleSubTab(s, l),
+    ];
+  }
+
+  List<Widget> _audioSubTab(MediaStreams s, AppLocalizations l) {
+    if (s.audio.isEmpty) {
+      return [Text(l.encNoAudio,
+          style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11))];
+    }
+    return [
+      for (var i = 0; i < s.audio.length && i < _audioPlan.length; i++)
+        _audioRow(s.audio[i], i, l),
+    ];
+  }
+
+  // Friendly source channel-layout label, e.g. "5.1" from "5.1(side)".
+  String _chLabel(AudioTrack t) {
+    final cl = t.channelLayout;
+    if (cl != null && cl.isNotEmpty) {
+      return cl.replaceAll('(side)', '').replaceAll('(back)', '').trim();
+    }
+    return '${t.channels}ch';
+  }
+
+  Widget _audioRow(AudioTrack t, int i, AppLocalizations l) {
+    final sel = _audioPlan[i];
+    final modes = <String, String>{
+      'aac': 'AAC', 'ac3': 'AC-3', 'eac3': 'E-AC-3',
+      if (t.canPassthrough) 'copy': l.encPassthrough,
+      'remove': l.encRemove,
+    };
+    final cur = sel.action == AudioAction.remove
+        ? 'remove'
+        : sel.action == AudioAction.passthrough
+            ? 'copy'
+            : sel.target.name; // aac | ac3 | eac3
+    void setMode(String? m) {
+      if (m == null) return;
+      setState(() {
+        if (m == 'remove') { sel.action = AudioAction.remove; sel.isDefault = false; }
+        else if (m == 'copy') { sel.action = AudioAction.passthrough; }
+        else {
+          sel.action = AudioAction.transcode;
+          sel.target = AudioTarget.values.firstWhere((e) => e.name == m);
+        }
+        // Keep exactly one default among the kept tracks (e.g. if the current
+        // default was just removed).
+        final kept = _audioPlan.where((a) => a.action != AudioAction.remove);
+        if (kept.isNotEmpty && !kept.any((a) => a.isDefault)) kept.first.isDefault = true;
+      });
+    }
+    final kept  = sel.action != AudioAction.remove;
+    final label = [
+      if (t.language != null) t.language!.toUpperCase(),
+      t.codecLabel,                              // e.g. "DTS-HD MA" vs "DTS"
+      '${t.channels}ch',
+      if (t.title != null && t.title!.isNotEmpty) t.title!,
+    ].join('  |  ');
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF20252f),
+        border: Border.all(color: const Color(0xFF2e3848)),
+        borderRadius: BorderRadius.circular(6)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        Row(children: [
+          SizedBox(width: 150, child: DropdownButton<String>(
+            value: cur, isDense: true, isExpanded: true,
+            dropdownColor: const Color(0xFF20252f),
+            underline: const SizedBox.shrink(),
+            style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11),
+            items: [for (final e in modes.entries)
+              DropdownMenuItem(value: e.key, child: Text(e.value))],
+            onChanged: setMode,
+          )),
+          const SizedBox(width: 8),
+          if (kept) GestureDetector(
+            onTap: () => setState(() {
+              for (final a in _audioPlan) { a.isDefault = false; }
+              sel.isDefault = true;
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: sel.isDefault ? const Color(0xFF00d4aa) : Colors.transparent,
+                border: Border.all(color: const Color(0xFF2e3848)),
+                borderRadius: BorderRadius.circular(5)),
+              child: Text(l.encDefault, style: TextStyle(
+                  color: sel.isDefault ? const Color(0xFF0a0c0f) : const Color(0xFF9aa3b8),
+                  fontSize: 10, fontWeight: FontWeight.w700)),
+            )),
+        ]),
+        // Channel choice only matters for multichannel sources: downmix to
+        // stereo, or keep the original layout (e.g. 5.1).
+        if (sel.action == AudioAction.transcode && t.channels > 2) ...[
+          const SizedBox(height: 6),
+          _SubTabToggle(
+            index: sel.channels == AudioChannelMode.stereo ? 0 : 1,
+            labels: ['${l.encStereo} (2.0)', '${l.encKeep} ${_chLabel(t)}'],
+            onChanged: (idx) => setState(() => sel.channels =
+                idx == 0 ? AudioChannelMode.stereo : AudioChannelMode.source),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  // Resolutions that will actually be encoded (selected, minus upscales),
+  // highest first, for the bitrate ladder preview.
+  List<Preset> get _previewResolutions {
+    final sel = _selectedPresets.toList()..sort();
+    final keep = [for (final i in sel) if (!_wouldUpscale(i)) kPresets[i]];
+    final list = keep.isEmpty
+        ? [for (final i in sel) kPresets[i]]
+        : keep;
+    return list..sort((a, b) => b.height.compareTo(a.height));
+  }
+
+  Widget _vqRadio(String label, bool selected, VoidCallback onTap, {String? suffix}) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(children: [
+          Container(
+            width: 15, height: 15,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: selected ? const Color(0xFF00d4aa) : const Color(0xFF4a5366),
+                  width: 2),
+            ),
+            child: selected
+                ? Center(child: Container(width: 7, height: 7,
+                    decoration: const BoxDecoration(
+                        shape: BoxShape.circle, color: Color(0xFF00d4aa))))
+                : null,
+          ),
+          const SizedBox(width: 9),
+          Text(label, style: TextStyle(
+              color: selected ? const Color(0xFFe8ebf0) : const Color(0xFFb8bfcf),
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+          if (suffix != null) ...[
+            const SizedBox(width: 6),
+            Text(suffix, style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10)),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  List<Widget> _videoSubTab(AppLocalizations l) {
+    final hdr          = _output == VideoOutput.h265Hdr;
+    final anchors      = _anchorList;
+    final codecDefault = _isAvc ? kAvcDefaultAnchorKbps : kHevcDefaultAnchorKbps;
+    final anchor       = anchors.contains(_vqBitrate4k) ? _vqBitrate4k : codecDefault;
+    final resList      = _previewResolutions;
+    // Top rung = highest selected resolution (not necessarily 2160p). All
+    // displayed values follow it + the HDR bump, and recompute on every rebuild
+    // (so they track changes to the selected renditions).
+    final topRes       = resList.isEmpty ? kPresets[1] : resList.first;
+
+    String mbps(int kbps) => (kbps / 1000).toStringAsFixed(kbps >= 10000 ? 0 : 1);
+    int topKbps(int a) => scaledVideoBitrateKbps(a, topRes.width, topRes.height, hdr: hdr);
+
+    final ladder = [
+      for (final r in resList)
+        '${r.height}p ${mbps(scaledVideoBitrateKbps(anchor, r.width, r.height, hdr: hdr))}',
+    ].join('  ·  ');
+
+    return [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text(l.encVideoOutput, style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
+        Text(_output.label, style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600)),
+      ]),
+      const SizedBox(height: 12),
+      _SubTabToggle(
+        index: _vqMode == VideoQualityMode.bitrate ? 0 : 1,
+        labels: [l.encBitrate, l.encCrf],
+        onChanged: (i) => setState(() {
+          _vqMode = i == 0 ? VideoQualityMode.bitrate : VideoQualityMode.crf;
+          _vqTouched = true;
+        }),
+      ),
+      const SizedBox(height: 12),
+      if (_vqMode == VideoQualityMode.bitrate) ...[
+        Text('${l.encTargetBitrate}  (${topRes.height}p${hdr ? " HDR" : ""})',
+            style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
+        const SizedBox(height: 4),
+        for (final a in anchors)
+          _vqRadio('${mbps(topKbps(a))} Mbps', a == anchor,
+              () => setState(() { _vqBitrate4k = a; _vqTouched = true; }),
+              suffix: a == codecDefault ? '(${l.encDefaultWord})' : null),
+        const SizedBox(height: 8),
+        Text('${l.encLadderPreview}:  $ladder Mbps',
+            style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontFamily: 'monospace')),
+      ] else ...[
+        Text('CRF', style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
+        const SizedBox(height: 4),
+        for (final c in kCrfTiers)
+          _vqRadio('$c', (kCrfTiers.contains(_vqCrf) ? _vqCrf : kDefaultCrf) == c,
+              () => setState(() { _vqCrf = c; _vqTouched = true; }),
+              suffix: c == kDefaultCrf ? '(${l.encDefaultWord})' : null),
+        const SizedBox(height: 8),
+        Text(l.encCrfNote,
+            style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontStyle: FontStyle.italic)),
+      ],
+      const SizedBox(height: 14),
+      Text('${l.encQuality}  (NVENC)', style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
+      const SizedBox(height: 4),
+      _SubTabToggle(
+        index: _vqEffort.index,
+        labels: [l.encQualityBalanced, l.encQualityHigh, l.encQualityBest],
+        onChanged: (i) => setState(() {
+          _vqEffort = VideoEffort.values[i];
+          _vqTouched = true;
+        }),
+      ),
+      const SizedBox(height: 4),
+      Text(l.encEffortNote,
+          style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontStyle: FontStyle.italic)),
+      if (!_vqTouched) ...[
+        const SizedBox(height: 8),
+        Text(l.encVideoUntouchedNote,
+            style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontStyle: FontStyle.italic)),
+      ],
+    ];
+  }
+
+  List<Widget> _subtitleSubTab(MediaStreams s, AppLocalizations l) {
+    if (s.subtitles.isEmpty) {
+      return [Text(l.encNoSubtitles,
+          style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11))];
+    }
+    return [
+      Text(l.encSubtitlesReadonly,
+          style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontStyle: FontStyle.italic)),
+      const SizedBox(height: 6),
+      for (final sub in s.subtitles)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 3),
+          child: Text(
+            '${(sub.language ?? "und").toUpperCase()}  |  ${sub.codec}${sub.isImageBased ? "  (image)" : ""}',
+            style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontFamily: 'monospace')),
+        ),
+    ];
+  }
+
   @override
   void initState() {
     super.initState();
     ffmpegAvailable().then((ok) => setState(() => _ffmpegOk = ok));
     nvencAvailable().then((ok) => setState(() => _nvencOk = ok));
     _inputCtrl.addListener(_onInputChanged);
+    _hlsDirCtrl.addListener(() {
+      if (!_syncingDirs) _hlsDirUserSet = _hlsDirCtrl.text.trim().isNotEmpty;
+    });
+    _dashDirCtrl.addListener(() {
+      if (!_syncingDirs) _dashDirUserSet = _dashDirCtrl.text.trim().isNotEmpty;
+    });
     languageNotifier.addListener(_onLang);
   }
   void _onLang() => setState(() {});
+
+  /// Fill any output-dir field the user hasn't set: inherit the other field's
+  /// user-entered value if present, otherwise the app default. So a single
+  /// entered path becomes the default for the other format(s).
+  void _syncDirDefaults() {
+    _syncingDirs = true;
+    if (!_hlsDirUserSet) {
+      _hlsDirCtrl.text = _dashDirUserSet ? _dashDirCtrl.text.trim() : _defaultHlsDir('');
+    }
+    if (!_dashDirUserSet) {
+      _dashDirCtrl.text = _hlsDirUserSet ? _hlsDirCtrl.text.trim() : _defaultDashDir('');
+    }
+    _syncingDirs = false;
+  }
 
   String _lastProbedPath = '';
   void _onInputChanged() {
@@ -84,9 +483,7 @@ class _EncoderTabState extends State<EncoderTab> {
       _suppressInputListener = true;
       if (paths.length == 1) {
         _inputCtrl.text = paths.first;
-        final stem = sanitiseStem(paths.first);
-        if (_hlsDirCtrl.text.isEmpty) _hlsDirCtrl.text = _defaultHlsDir(stem);
-        if (_dashDirCtrl.text.isEmpty) _dashDirCtrl.text = _defaultDashDir(stem);
+        _syncDirDefaults();
       } else {
         _inputCtrl.text = '${paths.length} files selected';
       }
@@ -94,7 +491,7 @@ class _EncoderTabState extends State<EncoderTab> {
     });
     // Probe all files in parallel, constrain grid to minimum height
     _probeAllDimensions(paths);
-    _probeColor(paths);
+    _probeStreams(paths);
   }
 
   /// Probes all [paths] in parallel and sets _srcHeight to the minimum
@@ -148,19 +545,37 @@ class _EncoderTabState extends State<EncoderTab> {
         }
       }
     });
-    _probeColor([path]);
+    _probeStreams([path]);
   }
 
-  /// Probe the colour (bit-depth + HDR) of the selection to gate output codecs.
-  /// Mixed selections fall back to SDR-8 (most permissive); per-job logic in
-  /// JobRunner corrects HDR files individually.
-  Future<void> _probeColor(List<String> paths) async {
+  /// Probe the colour (bit-depth + HDR) to gate output codecs, and — for a
+  /// single file — the full stream layout for the Advanced tab. Mixed/multi
+  /// selections fall back to SDR-8 and disable the Advanced tab (per-file audio
+  /// selection only makes sense for one file).
+  Future<void> _probeStreams(List<String> paths) async {
     final colors = await Future.wait(paths.map(probeInputColor));
     if (!mounted || colors.isEmpty) return;
     final uniform = colors.every((c) => c == colors.first) ? colors.first : InputColor.sdr8;
+
+    MediaStreams? streams;
+    var plan = <AudioSelection>[];
+    if (paths.length == 1) {
+      streams = await probeMediaStreams(paths.first);
+      plan = streams.audio.map(AudioSelection.defaultFor).toList();
+      // Exactly one default rendition: keep the source's default, else first.
+      if (plan.isNotEmpty && !plan.any((a) => a.isDefault)) plan.first.isDefault = true;
+      var seenDefault = false;
+      for (final a in plan) {
+        if (a.isDefault && seenDefault) { a.isDefault = false; }
+        else if (a.isDefault) { seenDefault = true; }
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _inputColor = uniform;
       _output     = uniform.defaultOutput;
+      _streams    = streams;
+      _audioPlan  = plan;
     });
   }
 
@@ -193,6 +608,10 @@ class _EncoderTabState extends State<EncoderTab> {
     if (res.isEmpty) return _toast(l.toastSelectRes);
     if (!_ffmpegOk)  return _toast(l.toastFfmpegMissing);
 
+    // The per-track audio plan only applies to a single-file selection; for
+    // multi-file the plan is left empty (2.0.0 behaviour) since track layouts
+    // differ per file.
+    final singleFile = inputs.length == 1;
     for (final input in inputs) {
       runner.submit(Job(
         id: DateTime.now().millisecondsSinceEpoch.toRadixString(16).substring(4),
@@ -200,7 +619,12 @@ class _EncoderTabState extends State<EncoderTab> {
         dashOutputDir: dashDir.isEmpty ? hlsDir : dashDir,
         format: _format, resolutions: res,
         segmentDuration: _segmentDuration.round(), quality: _quality,
-        output: _output, inputColor: _inputColor));
+        output: _output, inputColor: _inputColor,
+        audioPlan: singleFile ? List.of(_audioPlan) : const [],
+        videoQuality: (singleFile && _vqTouched)
+            ? VideoQuality(mode: _vqMode, bitrate4kKbps: _vqBitrate4k,
+                crf: _vqCrf, effort: _vqEffort)
+            : null));
       // Small delay so IDs don't collide (millisecond-based)
       await Future.delayed(const Duration(milliseconds: 2));
     }
@@ -226,78 +650,10 @@ class _EncoderTabState extends State<EncoderTab> {
               if (_ffmpegOk) ...[const SizedBox(width: 12), _NvencStatus(available: _nvencOk)],
             ]),
             const SizedBox(height: 12),
-            _SectionLabel(l.encSource),
-            const SizedBox(height: 12),
-            _PathField(controller: _inputCtrl, hint: l.encInputHint, label: l.encInputFile,
-                onBrowse: _pickInput, browseIcon: Icons.video_file_outlined),
-            if (_srcWidth > 0) ...[
-              const SizedBox(height: 4),
-              Row(children: [
-                const Icon(Icons.info_outline, size: 11, color: Color(0xFF9aa3b8)),
-                const SizedBox(width: 4),
-                Text(
-                  _selectedFiles.length > 1
-                      ? 'Min source: ${_srcWidth}×$_srcHeight — renditions constrained to smallest file'
-                      : '${l.encSourceSize}: ${_srcWidth}×$_srcHeight',
-                  style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
-              ]),
-            ],
+            _SubTabToggle(index: _configTab, labels: [l.encBasic, l.encAdvanced],
+                onChanged: (i) => setState(() => _configTab = i)),
             const SizedBox(height: 16),
-            _SectionLabel(l.encFormat),
-            const SizedBox(height: 12),
-            _FormatToggle(value: _format, bothLabel: l.encFormatBoth,
-                onChanged: (f) => setState(() => _format = f)),
-            const SizedBox(height: 16),
-            _SectionLabel(l.encQuality),
-            const SizedBox(height: 12),
-            _QualityToggle(value: _quality,
-                balancedLabel: l.encQualityBalanced, highLabel: l.encQualityHigh,
-                onChanged: (q) => setState(() => _quality = q)),
-            const SizedBox(height: 16),
-            _SectionLabel(l.encVideoOutput),
-            const SizedBox(height: 12),
-            _OutputToggle(value: _output, valid: _inputColor.validOutputs,
-                onChanged: (o) => setState(() => _output = o)),
-            if (_srcWidth > 0) ...[
-              const SizedBox(height: 4),
-              Row(children: [
-                const Icon(Icons.palette_outlined, size: 11, color: Color(0xFF9aa3b8)),
-                const SizedBox(width: 4),
-                Text('${l.encDetected}: ${_inputColorLabel(_inputColor)}',
-                    style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace')),
-              ]),
-            ],
-            const SizedBox(height: 16),
-            if (_format != EncodeFormat.dash) ...[
-              _PathField(controller: _hlsDirCtrl, hint: '/srv/hls/streams',
-                  label: _format == EncodeFormat.both ? l.encHlsOutputDir : l.encOutputDir,
-                  onBrowse: _pickHlsDir, browseIcon: Icons.folder_outlined),
-              const SizedBox(height: 12),
-            ],
-            if (_format != EncodeFormat.hls) ...[
-              _PathField(controller: _dashDirCtrl, hint: '/srv/dash/streams',
-                  label: _format == EncodeFormat.both ? l.encDashOutputDir : l.encOutputDir,
-                  onBrowse: _pickDashDir, browseIcon: Icons.folder_outlined),
-              const SizedBox(height: 16),
-            ],
-            const Divider(), const SizedBox(height: 12),
-            _SectionLabel(l.encRenditions),
-            const SizedBox(height: 12),
-            _ResolutionGrid(selected: _selectedPresets, srcWidth: _srcWidth, srcHeight: _srcHeight,
-                upscaleTooltipFn: l.upscaleTooltip, upscaleLabel: l.upscaleLabel,
-                onToggle: (i) => setState(() {
-                  if (_wouldUpscale(i)) return;
-                  _selectedPresets.contains(i) ? _selectedPresets.remove(i) : _selectedPresets.add(i);
-                })),
-            const Divider(), const SizedBox(height: 12),
-            _SectionLabel(l.encSegmentDuration),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: Slider(value: _segmentDuration, min: 2, max: 12, divisions: 10,
-                  activeColor: accent, onChanged: (v) => setState(() => _segmentDuration = v))),
-              SizedBox(width: 40, child: Text('${_segmentDuration.round()}s',
-                  style: TextStyle(color: accent, fontFamily: 'monospace', fontSize: 12))),
-            ]),
+            if (_configTab == 0) ..._basicForm(l, accent) else ..._advancedForm(l),
             const SizedBox(height: 16),
             SizedBox(width: double.infinity, child: ElevatedButton(
                 onPressed: () => _submit(runner), child: Text(l.encStartEncoding))),
@@ -438,6 +794,35 @@ class _OutputToggle extends StatelessWidget {
               message: o.isHdr ? 'Source is not HDR' : 'Not available for HDR source',
               child: child)));
       }).toList()),
+    );
+  }
+}
+
+/// Generic N-way segmented toggle (used for the Advanced sub-tab selector and
+/// the stereo/source channel toggle).
+class _SubTabToggle extends StatelessWidget {
+  final int index;
+  final List<String> labels;
+  final ValueChanged<int> onChanged;
+  const _SubTabToggle({required this.index, required this.labels, required this.onChanged});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(color: const Color(0xFF20252f),
+          border: Border.all(color: const Color(0xFF2e3848)), borderRadius: BorderRadius.circular(8)),
+      padding: const EdgeInsets.all(3),
+      child: Row(children: [
+        for (var i = 0; i < labels.length; i++)
+          Expanded(child: GestureDetector(onTap: () => onChanged(i),
+            child: AnimatedContainer(duration: const Duration(milliseconds: 150),
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              decoration: BoxDecoration(color: i == index ? const Color(0xFF00d4aa) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(5)),
+              alignment: Alignment.center,
+              child: Text(labels[i], overflow: TextOverflow.ellipsis, style: TextStyle(
+                  color: i == index ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
+                  fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.3))))),
+      ]),
     );
   }
 }
