@@ -2,18 +2,18 @@
 ; StreamPack — Inno Setup installer script
 ;
 ; Usage (from the streampack-desktop directory):
-;   iscc streampack-3.0.0.iss
+;   iscc streampack-3.1.0.iss
 ;
 ; Prerequisites:
 ;   1. flutter build windows --release  (produces build\windows\x64\runner\Release\)
 ;   2. Inno Setup 6+ installed          (https://jrsoftware.org/isinfo.php)
 ;
 ; Output:
-;   installer\StreamPack-3.0.0-Setup.exe
+;   installer\StreamPack-3.1.0-Setup.exe
 ; ============================================================================
 
 #define AppName      "StreamPack"
-#define AppVersion   "3.0.0"
+#define AppVersion   "3.1.0"
 #define AppPublisher "Hervé Jourdain"
 #define AppURL       "https://github.com/hjourdain-ryvr/streampack-desktop"
 #define AppExeName   "streampack.exe"
@@ -59,7 +59,7 @@ Name: "startupicon"; Description: "Start {#AppName} with Windows"; GroupDescript
 ; Main executable
 Source: "{#ReleaseDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
-; All DLLs — Flutter engine, plugins (window_manager, etc.), and VC++ runtime
+; All DLLs — Flutter engine, plugins (window_manager, package_info_plus, etc.), and VC++ runtime
 Source: "{#ReleaseDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Bundled ffmpeg binaries (cross-compiled, statically linked — no extra DLLs needed)

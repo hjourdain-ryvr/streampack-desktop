@@ -175,10 +175,10 @@ build\windows\x64\runner\Release\ffprobe.exe
 An [Inno Setup](https://jrsoftware.org/isinfo.php) script is included:
 
 ```bat
-iscc streampack-3.0.0.iss
+iscc streampack-3.1.0.iss
 ```
 
-Output: `installer\StreamPack-3.0.0-Setup.exe`
+Output: `installer\StreamPack-3.1.0-Setup.exe`
 
 ---
 
@@ -190,7 +190,7 @@ streampack-desktop/
 ├── build-ffmpeg.sh              ← convenience script wrapping Docker
 ├── setup.sh                     ← Linux: copies lib.streampack/→lib/ and patches CMakeLists.txt
 ├── setup.ps1                    ← Windows: same as setup.sh but PowerShell
-├── streampack-3.0.0.iss         ← Inno Setup installer script
+├── streampack-3.1.0.iss         ← Inno Setup installer script
 ├── README.md                    ← this file
 ├── vendor/                      ← built ffmpeg binaries (git-ignored)
 │   ├── linux/
@@ -268,10 +268,10 @@ appimagetool StreamPack.AppDir StreamPack-x86_64.AppImage
 ### Windows — installer
 
 ```bat
-iscc streampack-3.0.0.iss
+iscc streampack-3.1.0.iss
 ```
 
-Produces a per-user installer (`installer\StreamPack-3.0.0-Setup.exe`) that
+Produces a per-user installer (`installer\StreamPack-3.1.0-Setup.exe`) that
 bundles the executable, all Flutter DLLs, ffmpeg, ffprobe, and assets.
 
 ### Windows — zip
