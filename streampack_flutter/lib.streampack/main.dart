@@ -22,8 +22,8 @@ void main() async {
   // This is the officially supported way to prevent the startup flash.
   windowManager.waitUntilReadyToShow(
     const WindowOptions(
-      size: Size(1280, 1120),
-      minimumSize: Size(900, 1040),
+      size: Size(1280, 1190),
+      minimumSize: Size(900, 1110),
       center: true,
       title: 'StreamPack',
     ),

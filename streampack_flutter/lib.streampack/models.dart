@@ -306,6 +306,7 @@ class Job {
   HdrMetadata? hdrMeta;           // HDR10 static metadata (HDR sources only)
   List<AudioSelection> audioPlan; // per-track audio plan; empty = 2.0.0 default
   VideoQuality? videoQuality;     // Advanced override; null = preset ladder
+  String outputName;              // master/manifest name; empty = source name
 
   JobStatus status;
   double progress;        // 0.0 – 1.0
@@ -332,6 +333,7 @@ class Job {
     this.hdrMeta,
     this.audioPlan = const [],
     this.videoQuality,
+    this.outputName = '',
   })  : status = JobStatus.queued,
         progress = 0,
         currentPass = '',
@@ -351,12 +353,14 @@ class Job {
   /// Estimated time remaining, from elapsed time and progress. Null unless
   /// running with enough progress to extrapolate.
   String? get etaLabel {
-    if (status != JobStatus.running || progress < 0.02) return null;
+    if (status != JobStatus.running) return null;
     final ref = startedAt ?? createdAt;
     final elapsed = DateTime.now().difference(ref).inSeconds;
-    if (elapsed <= 0) return null;
+    // Too early to extrapolate reliably -> show a placeholder so the ETA is
+    // visible from the start of the run instead of popping in later.
+    if (progress < 0.01 || elapsed <= 0) return '...';
     final remaining = (elapsed / progress - elapsed).round();
-    if (remaining <= 0) return null;
+    if (remaining <= 0) return '...';
     if (remaining < 60) return '${remaining}s';
     return '${remaining ~/ 60}m ${remaining % 60}s';
   }

@@ -93,8 +93,16 @@ p_468p.m3u8
 p_720p.m3u8
 ''');
 
-    await promoteHlsMaster(input: '${tmp.path}/$stem.mkv', outputDir: tmp.path);
+    await promoteHlsMaster(input: '${tmp.path}/$stem.mkv', outputDir: tmp.path,
+        videoRange: 'PQ', frameRate: '23.976');
     final out = File('${tmp.path}/$stem.m3u8').readAsStringSync();
+
+    // Apple iOS/tvOS HLS authoring requirements
+    expect('VIDEO-RANGE=PQ'.allMatches(out).length, 2);       // one per video variant
+    expect('FRAME-RATE=23.976'.allMatches(out).length, 2);
+    expect('CLOSED-CAPTIONS=NONE'.allMatches(out).length, 2);
+    expect(out.contains('#EXT-X-INDEPENDENT-SEGMENTS'), isTrue);
+    expect(out.contains('VIDEO-RANGE'), isTrue);
 
     expect(out.contains('NAME="English 5.1"'), isTrue);
     expect(out.contains('NAME="English Stereo"'), isTrue);
@@ -176,6 +184,44 @@ p_720p.m3u8
         segmentDuration: 6, nvenc: true, quality: EncodeQuality.high,
         output: VideoOutput.h265Sdr, inputColor: InputColor.sdr10);
       expect(after(c, '-preset:v:0'), 'p6'); // EncodeQuality.high
+    });
+  });
+
+  group('output name', () {
+    test('defaultOutputName keeps the raw source name', () {
+      expect(defaultOutputName(r"D:\vids\Alien - Director's Cut.mkv"),
+          "Alien - Director's Cut");
+      expect(defaultOutputName('/x/Movie.2160p.mkv'), 'Movie.2160p');
+    });
+    test('stemFromName sanitises; safeFileName keeps Plex chars', () {
+      const pretty = 'Alien (1979) [tmdbid-348] - Directors Cut 2160P HDR';
+      // segment stem: URI/filesystem safe, no spaces/brackets
+      expect(stemFromName(pretty), isNot(contains(' ')));
+      expect(stemFromName(pretty), isNot(contains('[')));
+      expect(stemFromName(pretty), contains('tmdbid-348'));
+      // master filename: brackets/spaces preserved for Jellyfin/Plex matching
+      expect(safeFileName(pretty), pretty);
+    });
+
+    test('promote: master uses pretty name, subdir/URIs use safe stem', () async {
+      final tmp = await Directory.systemTemp.createTemp('sp_name_');
+      const pretty = 'Alien (1979) [tmdbid-348] - HDR';
+      final stem = stemFromName(pretty);
+      Directory('${tmp.path}/$stem').createSync(recursive: true);
+      File('${tmp.path}/$stem/master.m3u8').writeAsStringSync('''
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080,CODECS="hvc1"
+p_1080p.m3u8
+''');
+      await promoteHlsMaster(input: '/x/whatever.mkv', outputDir: tmp.path,
+          stemOverride: stem, masterName: safeFileName(pretty));
+      // master file named with the pretty name
+      expect(File('${tmp.path}/$pretty.m3u8').existsSync(), isTrue);
+      final out = File('${tmp.path}/$pretty.m3u8').readAsStringSync();
+      // variant URI uses the safe stem subdir
+      expect(out.contains('$stem/p_1080p.m3u8'), isTrue);
+      await tmp.delete(recursive: true);
     });
   });
 

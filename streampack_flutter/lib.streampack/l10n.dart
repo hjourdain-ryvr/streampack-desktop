@@ -49,6 +49,8 @@ class AppLocalizations {
   String get encSource            => const {'de':'Quelle','sv':'Källa','fr':'Source'}[lang.code] ?? 'Source';
   String get encInputFile         => const {'de':'Eingabedatei','sv':'Indatafil','fr':'Fichier source'}[lang.code] ?? 'Input file';
   String get encInputHint         => '/srv/videos/movie.mp4';
+  String get encOutputName        => const {'de':'Ausgabename','sv':'Utdatanamn','fr':'Nom de sortie'}[lang.code] ?? 'Output name';
+  String get encOutputNameHint    => const {'de':'Standard: Quelldateiname','sv':'Standard: kallfilnamn','fr':'Defaut : nom du fichier source'}[lang.code] ?? 'Default: source file name';
   String get encSourceSize        => const {'de':'Quelle','sv':'Källa','fr':'Source'}[lang.code] ?? 'Source';
   String get encFormat            => const {'de':'Format','sv':'Format','fr':'Format'}[lang.code] ?? 'Format';
   String get encFormatBoth        => const {'de':'Beide','sv':'Båda','fr':'Les deux'}[lang.code] ?? 'Both';

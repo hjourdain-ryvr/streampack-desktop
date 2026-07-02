@@ -77,10 +77,11 @@ class JobRunner extends ChangeNotifier {
     double durationS  = 0;
     int    srcWidth   = 0;
     int    srcHeight  = 0;
+    String frameRate  = '';   // HLS EXT-X-STREAM-INF FRAME-RATE (Apple requires it)
     try {
       final probe = await Process.run(ffprobePath(), [
         '-v', 'error',
-        '-show_entries', 'format=duration:stream=width,height,pix_fmt,color_transfer',
+        '-show_entries', 'format=duration:stream=width,height,pix_fmt,color_transfer,avg_frame_rate',
         '-select_streams', 'v:0',
         '-of', 'json', job.input,
       ]);
@@ -101,6 +102,16 @@ class JobRunner extends ChangeNotifier {
           pixFmt: pixMatch?.group(1),
           colorTransfer: trcMatch?.group(1),
         );
+        // Frame rate (n/d -> decimal) for the HLS FRAME-RATE attribute.
+        final fpsM = RegExp(r'"avg_frame_rate"\s*:\s*"(\d+)/(\d+)"').firstMatch(json);
+        if (fpsM != null) {
+          final n = int.tryParse(fpsM.group(1)!) ?? 0;
+          final d = int.tryParse(fpsM.group(2)!) ?? 0;
+          if (n > 0 && d > 0) {
+            final f = n / d;
+            frameRate = f == f.roundToDouble() ? f.toStringAsFixed(0) : f.toStringAsFixed(3);
+          }
+        }
       }
     } catch (_) {}
 
@@ -157,12 +168,20 @@ class JobRunner extends ChangeNotifier {
       EncodeFormat.both => ['hls', 'dash'],
     };
 
+    // Output naming: the (editable) output name drives the master/manifest
+    // filename (pretty, e.g. "Alien (1979) [tmdbid-348]...") and the segment
+    // directory + URIs (safe form). Defaults to the source file name.
+    final baseName   = job.outputName.trim().isNotEmpty
+        ? job.outputName.trim() : defaultOutputName(job.input);
+    final segStem    = stemFromName(baseName);
+    final masterName = safeFileName(baseName);
+
     for (final pass in passes) {
       job.currentPass = pass;
       _notify();
 
       final outDir = pass == 'dash' ? job.dashOutputDir : job.hlsOutputDir;
-      final stem   = sanitiseStem(job.input);
+      final stem   = segStem;
       final segDir = Directory('$outDir${Platform.pathSeparator}$stem');
 
       try {
@@ -194,7 +213,8 @@ class JobRunner extends ChangeNotifier {
               inputColor: job.inputColor,
               hdrMeta: job.hdrMeta,
               audioPlan: job.audioPlan,
-              videoQuality: job.videoQuality)
+              videoQuality: job.videoQuality,
+              stemOverride: segStem)
           : buildDashCmd(
               input: job.input, outputDir: outDir,
               resolutions: job.activeResolutions,
@@ -205,7 +225,8 @@ class JobRunner extends ChangeNotifier {
               inputColor: job.inputColor,
               hdrMeta: job.hdrMeta,
               audioPlan: job.audioPlan,
-              videoQuality: job.videoQuality);
+              videoQuality: job.videoQuality,
+              stemOverride: segStem);
 
       final success = await _runPass(
         job: job, cmd: cmd, pass: pass,
@@ -225,10 +246,13 @@ class JobRunner extends ChangeNotifier {
 
     if (job.format == EncodeFormat.hls || job.format == EncodeFormat.both) {
       try {
-        await promoteHlsMaster(input: job.input, outputDir: job.hlsOutputDir);
-        final stem = sanitiseStem(job.input);
+        await promoteHlsMaster(
+            input: job.input, outputDir: job.hlsOutputDir,
+            videoRange: output == VideoOutput.h265Hdr ? 'PQ' : 'SDR',
+            frameRate: frameRate,
+            stemOverride: segStem, masterName: masterName);
         hlsResult = await validateM3u8(
-            '${job.hlsOutputDir}${Platform.pathSeparator}$stem.m3u8');
+            '${job.hlsOutputDir}${Platform.pathSeparator}$masterName.m3u8');
       } catch (e) {
         job.status = JobStatus.error;
         job.error  = 'Failed to promote HLS master playlist: $e';
@@ -239,10 +263,10 @@ class JobRunner extends ChangeNotifier {
 
     if (job.format == EncodeFormat.dash || job.format == EncodeFormat.both) {
       try {
-        await promoteDashManifest(input: job.input, outputDir: job.dashOutputDir);
-        final stem = sanitiseStem(job.input);
+        await promoteDashManifest(input: job.input, outputDir: job.dashOutputDir,
+            stemOverride: segStem, masterName: masterName);
         dashResult = await validateMpd(
-            '${job.dashOutputDir}${Platform.pathSeparator}$stem.mpd');
+            '${job.dashOutputDir}${Platform.pathSeparator}$masterName.mpd');
       } catch (e) {
         job.status = JobStatus.error;
         job.error  = 'Failed to promote DASH manifest: $e';

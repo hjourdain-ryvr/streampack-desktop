@@ -15,25 +15,43 @@ import 'ffmpeg.dart';
 ///   5. Collapse underscores again (in case step 4 produced new sequences)
 ///   6. Strip leading/trailing underscores and hyphens
 String sanitiseStem(String inputPath) {
-  var stem = File(inputPath).uri.pathSegments.last;
-  // Strip extension
+  // Basename (handle both / and \ so Windows paths work on any host), no ext.
+  var stem = inputPath.split(RegExp(r'[/\\]')).last;
   final dot = stem.lastIndexOf('.');
   if (dot > 0) stem = stem.substring(0, dot);
-  // Spaces → underscore
-  stem = stem.replaceAll(RegExp(r'\s+'), '_');
-  // Keep only word chars and hyphens
+  return stemFromName(stem);
+}
+
+/// Sanitise a plain name (no path/extension handling) into a filesystem- and
+/// URI-safe stem: spaces -> underscore, keep word chars + hyphen, collapse.
+/// Used for the segment directory, segment filenames and manifest URIs.
+String stemFromName(String name) {
+  var stem = name.replaceAll(RegExp(r'\s+'), '_');
   stem = stem.replaceAll(RegExp(r'[^\w\-]'), '');
-  // Collapse multiple underscores first
   stem = stem.replaceAll(RegExp(r'_+'), '_');
-  // Clean up underscore-hyphen combinations → single hyphen
   stem = stem.replaceAll(RegExp(r'_-_'), '-');
   stem = stem.replaceAll(RegExp(r'_-(?!_)'), '-');
   stem = stem.replaceAll(RegExp(r'(?<!_)-_'), '-');
-  // Collapse underscores again
   stem = stem.replaceAll(RegExp(r'_+'), '_');
-  // Strip leading/trailing underscores or hyphens
   stem = stem.replaceAll(RegExp(r'^[_\-]+|[_\-]+$'), '');
   return stem.isEmpty ? 'output' : stem;
+}
+
+/// Default output name from a source path: basename without extension, as-is
+/// (spaces/brackets kept). This is what the UI pre-fills and the user can edit.
+String defaultOutputName(String inputPath) {
+  var n = inputPath.split(RegExp(r'[/\\]')).last;
+  final dot = n.lastIndexOf('.');
+  if (dot > 0) n = n.substring(0, dot);
+  return n.trim();
+}
+
+/// Filesystem-safe master/manifest filename: keep spaces, parentheses, brackets
+/// and hyphens (Plex/Jellyfin need e.g. "[tmdbid-348]"), strip only characters
+/// illegal in a filename. Falls back to a sanitised stem if empty.
+String safeFileName(String name) {
+  final s = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+  return s.isEmpty ? stemFromName(name) : s;
 }
 
 // ── NVIDIA NVENC detection ────────────────────────────────────────────────────
@@ -488,8 +506,9 @@ List<String> buildHlsCmd({
   HdrMetadata? hdrMeta,
   List<AudioSelection> audioPlan = const [],
   VideoQuality? videoQuality,
+  String? stemOverride,
 }) {
-  final stem   = sanitiseStem(input);
+  final stem   = stemOverride ?? sanitiseStem(input);
   // Use forward slashes for all HLS output paths. ffmpeg derives the fMP4
   // init-segment directory by scanning the output path for '/', so on Windows
   // backslash paths it finds none, and the per-variant init segments are not
@@ -592,15 +611,32 @@ String _friendlyAudioMediaLine(String line, Set<String> used, String stem) {
 
 /// Move master.m3u8 from <segDir> to <outputDir>/<stem>.m3u8 and rewrite
 /// variant URIs to include the stem subdirectory prefix.
+/// Add Apple-HLS-required attributes to a video EXT-X-STREAM-INF line:
+/// VIDEO-RANGE (SDR/PQ - required when HDR is present), FRAME-RATE, and
+/// CLOSED-CAPTIONS=NONE (required when there are no captions). Idempotent;
+/// only touches video variants (those with RESOLUTION).
+String _augmentStreamInf(String inf, String videoRange, String frameRate) {
+  if (!inf.contains('RESOLUTION=')) return inf;
+  var s = inf;
+  if (!s.contains('VIDEO-RANGE=')) s += ',VIDEO-RANGE=$videoRange';
+  if (frameRate.isNotEmpty && !s.contains('FRAME-RATE=')) s += ',FRAME-RATE=$frameRate';
+  if (!s.contains('CLOSED-CAPTIONS')) s += ',CLOSED-CAPTIONS=NONE';
+  return s;
+}
+
 Future<void> promoteHlsMaster({
   required String input,
   required String outputDir,
+  String videoRange = 'SDR',   // 'SDR' | 'PQ' (HDR10) | 'HLG'
+  String frameRate  = '',      // e.g. '23.976'; empty = omit
+  String? stemOverride,        // segment dir + URIs (safe form of output name)
+  String masterName = '',      // master filename (pretty form of output name)
 }) async {
-  final stem      = sanitiseStem(input);
+  final stem      = stemOverride ?? sanitiseStem(input);
   final sep       = Platform.pathSeparator;
   final segDir    = '$outputDir$sep$stem';
   final srcMaster = File('$segDir${sep}master.m3u8');
-  final dstMaster = File('$outputDir$sep$stem.m3u8');
+  final dstMaster = File('$outputDir$sep${masterName.isNotEmpty ? masterName : stem}.m3u8');
 
   final lines = await srcMaster.readAsLines();
 
@@ -622,7 +658,7 @@ Future<void> promoteHlsMaster({
       final uri = t.isNotEmpty && !t.startsWith('#') && t.endsWith('.m3u8')
           ? '$stem/$t'
           : t;
-      variants.add((inf: pendingInf!, uri: uri));
+      variants.add((inf: _augmentStreamInf(pendingInf!, videoRange, frameRate), uri: uri));
       pendingInf = null;
     } else if (!inVariants) {
       // Replace ffmpeg's auto "audio_N" NAME with a friendly language+layout
@@ -641,6 +677,13 @@ Future<void> promoteHlsMaster({
     final ib  = int.tryParse(bwB ?? '') ?? 0;
     return ia.compareTo(ib);
   });
+
+  // Apple requires EXT-X-INDEPENDENT-SEGMENTS in the master (our segments are
+  // encoded independent via -hls_flags independent_segments).
+  if (!header.any((l) => l.contains('EXT-X-INDEPENDENT-SEGMENTS'))) {
+    final vIdx = header.indexWhere((l) => l.startsWith('#EXT-X-VERSION'));
+    header.insert(vIdx >= 0 ? vIdx + 1 : header.length, '#EXT-X-INDEPENDENT-SEGMENTS');
+  }
 
   final output = [
     ...header,
@@ -674,8 +717,9 @@ List<String> buildDashCmd({
   HdrMetadata? hdrMeta,
   List<AudioSelection> audioPlan = const [],
   VideoQuality? videoQuality,
+  String? stemOverride,
 }) {
-  final stem   = sanitiseStem(input);
+  final stem   = stemOverride ?? sanitiseStem(input);
   final sep    = Platform.pathSeparator;
   final segDir = '$outputDir$sep$stem';
   final n      = resolutions.length;
@@ -786,12 +830,14 @@ List<String> buildDashCmd({
 Future<void> promoteDashManifest({
   required String input,
   required String outputDir,
+  String? stemOverride,
+  String masterName = '',
 }) async {
-  final stem    = sanitiseStem(input);
+  final stem    = stemOverride ?? sanitiseStem(input);
   final sep     = Platform.pathSeparator;
   final segDir  = '$outputDir$sep$stem';
   final srcMpd  = File('$segDir$sep$stem.mpd');
-  final dstMpd  = File('$outputDir$sep$stem.mpd');
+  final dstMpd  = File('$outputDir$sep${masterName.isNotEmpty ? masterName : stem}.mpd');
 
   final text = await srcMpd.readAsString();
   final doc  = XmlDocument.parse(text);

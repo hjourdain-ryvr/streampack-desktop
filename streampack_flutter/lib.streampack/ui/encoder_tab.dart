@@ -6,7 +6,7 @@ import '../models.dart';
 import '../job_runner.dart';
 import '../ffmpeg.dart';
 import '../l10n.dart';
-import '../encoder.dart' show nvencAvailable, probeInputColor, probeMediaStreams;
+import '../encoder.dart' show nvencAvailable, probeInputColor, probeMediaStreams, defaultOutputName;
 import 'job_card.dart';
 
 class EncoderTab extends StatefulWidget {
@@ -17,6 +17,7 @@ class EncoderTab extends StatefulWidget {
 
 class _EncoderTabState extends State<EncoderTab> {
   final _inputCtrl   = TextEditingController();
+  final _outputNameCtrl = TextEditingController();
   final _hlsDirCtrl  = TextEditingController();
   final _dashDirCtrl = TextEditingController();
   // Track which output-dir fields the user set explicitly, so a single entered
@@ -48,7 +49,14 @@ class _EncoderTabState extends State<EncoderTab> {
   int  _vqBitrate4k = kHevcDefaultAnchorKbps;
   int  _vqCrf       = kDefaultCrf;
   VideoEffort _vqEffort = VideoEffort.balanced;
+  bool _vqEffortTouched = false;  // false = mirror the Basic quality choice
   bool _vqTouched   = false;
+
+  // Effort shown/used in Advanced: mirrors the Basic quality (Balanced->balanced,
+  // Best->best) until the user picks an explicit Advanced effort.
+  VideoEffort get _effectiveEffort => _vqEffortTouched
+      ? _vqEffort
+      : (_quality == EncodeQuality.high ? VideoEffort.best : VideoEffort.balanced);
 
   bool get _isAvc => _output == VideoOutput.h264Sdr;
   List<int> get _anchorList =>
@@ -80,6 +88,8 @@ class _EncoderTabState extends State<EncoderTab> {
           style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 10, fontFamily: 'monospace'))),
       ]),
     ],
+    const SizedBox(height: 12),
+    _PathField(controller: _outputNameCtrl, hint: l.encOutputNameHint, label: l.encOutputName),
     const SizedBox(height: 16),
     _SectionLabel(l.encFormat),
     const SizedBox(height: 12),
@@ -380,10 +390,11 @@ class _EncoderTabState extends State<EncoderTab> {
       Text('${l.encQuality}  (NVENC)', style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
       const SizedBox(height: 4),
       _SubTabToggle(
-        index: _vqEffort.index,
+        index: _effectiveEffort.index,
         labels: [l.encQualityBalanced, l.encQualityHigh, l.encQualityBest],
         onChanged: (i) => setState(() {
           _vqEffort = VideoEffort.values[i];
+          _vqEffortTouched = true;
           _vqTouched = true;
         }),
       ),
@@ -456,6 +467,7 @@ class _EncoderTabState extends State<EncoderTab> {
     if (_selectedFiles.isNotEmpty) setState(() => _selectedFiles = []);
     if (File(path).existsSync()) {
       _lastProbedPath = path;
+      if (_outputNameCtrl.text.trim().isEmpty) _outputNameCtrl.text = defaultOutputName(path);
       setState(() { _srcWidth = 0; _srcHeight = 0; });
       _probeDimensions(path);
     }
@@ -465,7 +477,7 @@ class _EncoderTabState extends State<EncoderTab> {
   void dispose() {
     languageNotifier.removeListener(_onLang);
     _inputCtrl.removeListener(_onInputChanged);
-    _inputCtrl.dispose(); _hlsDirCtrl.dispose(); _dashDirCtrl.dispose();
+    _inputCtrl.dispose(); _outputNameCtrl.dispose(); _hlsDirCtrl.dispose(); _dashDirCtrl.dispose();
     super.dispose();
   }
 
@@ -483,9 +495,11 @@ class _EncoderTabState extends State<EncoderTab> {
       _suppressInputListener = true;
       if (paths.length == 1) {
         _inputCtrl.text = paths.first;
+        _outputNameCtrl.text = defaultOutputName(paths.first);
         _syncDirDefaults();
       } else {
         _inputCtrl.text = '${paths.length} files selected';
+        _outputNameCtrl.text = '';
       }
       _suppressInputListener = false;
     });
@@ -623,8 +637,11 @@ class _EncoderTabState extends State<EncoderTab> {
         audioPlan: singleFile ? List.of(_audioPlan) : const [],
         videoQuality: (singleFile && _vqTouched)
             ? VideoQuality(mode: _vqMode, bitrate4kKbps: _vqBitrate4k,
-                crf: _vqCrf, effort: _vqEffort)
-            : null));
+                crf: _vqCrf, effort: _effectiveEffort)
+            : null,
+        // Output name applies to a single file; multi-file jobs each fall back
+        // to their own source name.
+        outputName: singleFile ? _outputNameCtrl.text.trim() : ''));
       // Small delay so IDs don't collide (millisecond-based)
       await Future.delayed(const Duration(milliseconds: 2));
     }
@@ -714,10 +731,10 @@ class _SectionLabel extends StatelessWidget {
 class _PathField extends StatelessWidget {
   final TextEditingController controller;
   final String hint, label;
-  final VoidCallback onBrowse;
-  final IconData browseIcon;
+  final VoidCallback? onBrowse;      // null = no browse button (plain text field)
+  final IconData? browseIcon;
   const _PathField({required this.controller, required this.hint, required this.label,
-      required this.onBrowse, required this.browseIcon});
+      this.onBrowse, this.browseIcon});
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     Text(label, style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600)),
@@ -726,14 +743,16 @@ class _PathField extends StatelessWidget {
       Expanded(child: TextField(controller: controller,
           style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
           decoration: InputDecoration(hintText: hint))),
-      const SizedBox(width: 6),
-      SizedBox(height: 44, child: OutlinedButton(
-          onPressed: onBrowse,
-          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFb8bfcf),
-              side: const BorderSide(color: Color(0xFF4d5870)),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-          child: Icon(browseIcon, size: 16))),
+      if (onBrowse != null) ...[
+        const SizedBox(width: 6),
+        SizedBox(height: 44, child: OutlinedButton(
+            onPressed: onBrowse,
+            style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFb8bfcf),
+                side: const BorderSide(color: Color(0xFF4d5870)),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: Icon(browseIcon, size: 16))),
+      ],
     ]),
   ]);
 }
