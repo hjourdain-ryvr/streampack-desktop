@@ -71,7 +71,10 @@ class _EncoderTabState extends State<EncoderTab> {
   };
 
   // ── Basic config form (the 2.0.0 settings) ────────────────────────────────
-  List<Widget> _basicForm(AppLocalizations l, Color accent) => [
+  // Basic form is laid out in two columns (see build) so it fits without
+  // scrolling in a window that stays within a 1080-logical-pixel screen.
+  // Left column: source, output name, format + output directory(ies).
+  List<Widget> _basicLeft(AppLocalizations l, Color accent) => [
     _SectionLabel(l.encSource),
     const SizedBox(height: 12),
     _PathField(controller: _inputCtrl, hint: l.encInputHint, label: l.encInputFile,
@@ -94,18 +97,39 @@ class _EncoderTabState extends State<EncoderTab> {
     _SectionLabel(l.encFormat),
     const SizedBox(height: 12),
     _FormatToggle(value: _format, bothLabel: l.encFormatBoth,
+        // DASH dual-ladder (HDR+SDR tone-mapping) is not implemented yet, so
+        // dual-ladder modes are HLS-only for now.
+        disabled: _output.hasSdrLadder
+            ? const {EncodeFormat.dash, EncodeFormat.both} : const {},
+        disabledTip: l.encDashUnavailableDual,
         onChanged: (f) => setState(() { _format = f; _syncDirDefaults(); })),
     const SizedBox(height: 16),
-    _SectionLabel(l.encQuality),
-    const SizedBox(height: 12),
-    _QualityToggle(value: _quality, balancedLabel: l.encQualityBalanced, highLabel: l.encQualityBest,
-        onChanged: (q) => setState(() => _quality = q)),
-    const SizedBox(height: 16),
+    if (_format != EncodeFormat.dash) ...[
+      _PathField(controller: _hlsDirCtrl, hint: '/srv/hls/streams',
+          label: _format == EncodeFormat.both ? l.encHlsOutputDir : l.encOutputDir,
+          onBrowse: _pickHlsDir, browseIcon: Icons.folder_outlined),
+      const SizedBox(height: 12),
+    ],
+    if (_format != EncodeFormat.hls)
+      _PathField(controller: _dashDirCtrl, hint: '/srv/dash/streams',
+          label: _format == EncodeFormat.both ? l.encDashOutputDir : l.encOutputDir,
+          onBrowse: _pickDashDir, browseIcon: Icons.folder_outlined),
+  ];
+
+  // Basic form, middle column (Part 2): video output, quality, renditions.
+  // Kept in both Basic and Advanced modes so Renditions stay available.
+  List<Widget> _basicRight(AppLocalizations l, Color accent) => [
     _SectionLabel(l.encVideoOutput),
     const SizedBox(height: 12),
     _OutputToggle(value: _output, valid: _inputColor.validOutputs,
         onChanged: (o) => setState(() {
           _output = o;
+          // Dual-ladder modes are HLS-only for now (no DASH tone-mapping yet);
+          // snap the format back to HLS if DASH/Both was selected.
+          if (o.hasSdrLadder && _format != EncodeFormat.hls) {
+            _format = EncodeFormat.hls;
+            _syncDirDefaults();
+          }
           // Bitrate anchors differ by codec; snap to the codec default if the
           // current anchor isn't in the new codec's list.
           if (!_anchorList.contains(_vqBitrate4k)) {
@@ -122,19 +146,11 @@ class _EncoderTabState extends State<EncoderTab> {
       ]),
     ],
     const SizedBox(height: 16),
-    if (_format != EncodeFormat.dash) ...[
-      _PathField(controller: _hlsDirCtrl, hint: '/srv/hls/streams',
-          label: _format == EncodeFormat.both ? l.encHlsOutputDir : l.encOutputDir,
-          onBrowse: _pickHlsDir, browseIcon: Icons.folder_outlined),
-      const SizedBox(height: 12),
-    ],
-    if (_format != EncodeFormat.hls) ...[
-      _PathField(controller: _dashDirCtrl, hint: '/srv/dash/streams',
-          label: _format == EncodeFormat.both ? l.encDashOutputDir : l.encOutputDir,
-          onBrowse: _pickDashDir, browseIcon: Icons.folder_outlined),
-      const SizedBox(height: 16),
-    ],
-    const Divider(), const SizedBox(height: 12),
+    _SectionLabel(l.encQuality),
+    const SizedBox(height: 12),
+    _QualityToggle(value: _quality, balancedLabel: l.encQualityBalanced, highLabel: l.encQualityBest,
+        onChanged: (q) => setState(() => _quality = q)),
+    const SizedBox(height: 16),
     _SectionLabel(l.encRenditions),
     const SizedBox(height: 12),
     _ResolutionGrid(selected: _selectedPresets, srcWidth: _srcWidth, srcHeight: _srcHeight,
@@ -143,15 +159,6 @@ class _EncoderTabState extends State<EncoderTab> {
           if (_wouldUpscale(i)) return;
           _selectedPresets.contains(i) ? _selectedPresets.remove(i) : _selectedPresets.add(i);
         })),
-    const Divider(), const SizedBox(height: 12),
-    _SectionLabel(l.encSegmentDuration),
-    const SizedBox(height: 12),
-    Row(children: [
-      Expanded(child: Slider(value: _segmentDuration, min: 2, max: 12, divisions: 10,
-          activeColor: accent, onChanged: (v) => setState(() => _segmentDuration = v))),
-      SizedBox(width: 40, child: Text('${_segmentDuration.round()}s',
-          style: TextStyle(color: accent, fontFamily: 'monospace', fontSize: 12))),
-    ]),
   ];
 
   // ── Advanced form (per-track audio / video / subtitles) ────────────────────
@@ -331,7 +338,8 @@ class _EncoderTabState extends State<EncoderTab> {
   }
 
   List<Widget> _videoSubTab(AppLocalizations l) {
-    final hdr          = _output == VideoOutput.h265Hdr;
+    final hdr          = _output.isHdr;   // HDR ladder gets the +15% bump
+    final isDual       = _output.hasSdrLadder;
     final anchors      = _anchorList;
     final codecDefault = _isAvc ? kAvcDefaultAnchorKbps : kHevcDefaultAnchorKbps;
     final anchor       = anchors.contains(_vqBitrate4k) ? _vqBitrate4k : codecDefault;
@@ -343,11 +351,19 @@ class _EncoderTabState extends State<EncoderTab> {
 
     String mbps(int kbps) => (kbps / 1000).toStringAsFixed(kbps >= 10000 ? 0 : 1);
     int topKbps(int a) => scaledVideoBitrateKbps(a, topRes.width, topRes.height, hdr: hdr);
-
-    final ladder = [
-      for (final r in resList)
-        '${r.height}p ${mbps(scaledVideoBitrateKbps(anchor, r.width, r.height, hdr: hdr))}',
+    String ladderOf(List<Preset> rl, int anc, bool hdrBump) => [
+      for (final r in rl)
+        '${r.height}p ${mbps(scaledVideoBitrateKbps(anc, r.width, r.height, hdr: hdrBump))}',
     ].join('  ·  ');
+
+    // Single mode: one ladder. Dual mode: HDR (H.265, +15%) plus the tone-mapped
+    // SDR ladder at its own codec tier (H.264 capped at 1080p, mapped anchor).
+    final ladder     = ladderOf(resList, anchor, hdr);
+    final sdrLadder  = isDual
+        ? ladderOf(sdrLadderFor(resList, _output),
+                   sdrAnchorKbps(anchor, _output), false)
+        : '';
+    final sdrCodec   = _output.sdrIsHevc ? 'H.265' : 'H.264';
 
     return [
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
@@ -373,8 +389,16 @@ class _EncoderTabState extends State<EncoderTab> {
               () => setState(() { _vqBitrate4k = a; _vqTouched = true; }),
               suffix: a == codecDefault ? '(${l.encDefaultWord})' : null),
         const SizedBox(height: 8),
-        Text('${l.encLadderPreview}:  $ladder Mbps',
-            style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontFamily: 'monospace')),
+        if (isDual) ...[
+          Text('${l.encLadderPreview}:', style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10)),
+          const SizedBox(height: 2),
+          Text('  HDR (H.265):  $ladder Mbps',
+              style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontFamily: 'monospace')),
+          Text('  SDR ($sdrCodec):  $sdrLadder Mbps',
+              style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontFamily: 'monospace')),
+        ] else
+          Text('${l.encLadderPreview}:  $ladder Mbps',
+              style: const TextStyle(color: Color(0xFF8a92a6), fontSize: 10, fontFamily: 'monospace')),
       ] else ...[
         Text('CRF', style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11)),
         const SizedBox(height: 4),
@@ -657,23 +681,61 @@ class _EncoderTabState extends State<EncoderTab> {
     final l = context.l10n;
 
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      SizedBox(width: 380, child: Container(
+      SizedBox(width: 730, child: Container(
         decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xFF2e3848)))),
-        child: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(
+        child: Padding(padding: const EdgeInsets.all(24), child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Status + Basic/Advanced toggle, spanning the top of Parts 1-2.
             Row(children: [
               _FfmpegStatus(ok: _ffmpegOk),
               if (_ffmpegOk) ...[const SizedBox(width: 12), _NvencStatus(available: _nvencOk)],
             ]),
             const SizedBox(height: 12),
-            _SubTabToggle(index: _configTab, labels: [l.encBasic, l.encAdvanced],
-                onChanged: (i) => setState(() => _configTab = i)),
-            const SizedBox(height: 16),
-            if (_configTab == 0) ..._basicForm(l, accent) else ..._advancedForm(l),
-            const SizedBox(height: 16),
-            SizedBox(width: double.infinity, child: ElevatedButton(
-                onPressed: () => _submit(runner), child: Text(l.encStartEncoding))),
+            // Regions 1 (source) and 2 (encoder) side by side, filling the height;
+            // the vertical divider runs down to the horizontal divider above
+            // Region 3. Each region scrolls on its own (Advanced can be tall).
+            Expanded(child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              // Region 1: Basic/Advanced toggle (over Region 1 only), the source/
+              // format inputs (or the Advanced form), and Segment duration pinned
+              // at the bottom.
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                _SubTabToggle(index: _configTab, labels: [l.encBasic, l.encAdvanced],
+                    onChanged: (i) => setState(() => _configTab = i)),
+                const SizedBox(height: 16),
+                Expanded(child: SingleChildScrollView(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _configTab == 0 ? _basicLeft(l, accent) : _advancedForm(l),
+                ))),
+                const SizedBox(height: 12),
+                _SectionLabel(l.encSegmentDuration),
+                const SizedBox(height: 2),
+                Row(children: [
+                  Expanded(child: Slider(value: _segmentDuration, min: 2, max: 12, divisions: 10,
+                      activeColor: accent, onChanged: (v) => setState(() => _segmentDuration = v))),
+                  SizedBox(width: 36, child: Text('${_segmentDuration.round()}s',
+                      style: TextStyle(color: accent, fontFamily: 'monospace', fontSize: 12))),
+                ]),
+              ])),
+              const VerticalDivider(width: 41, thickness: 1, color: Color(0xFF2e3848)),
+              // Region 2: video output / quality / renditions (both modes). An
+              // invisible toggle reserves the same height so its content starts
+              // level with Region 1's content.
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Visibility(visible: false, maintainSize: true, maintainAnimation: true,
+                    maintainState: true,
+                    child: _SubTabToggle(index: 0, labels: [l.encBasic, l.encAdvanced], onChanged: (_) {})),
+                const SizedBox(height: 16),
+                Expanded(child: SingleChildScrollView(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _basicRight(l, accent),
+                ))),
+              ])),
+            ])),
+            // Region 3: Start Encoding, centered under Regions 1-2.
+            const Divider(height: 33, color: Color(0xFF2e3848)),
+            Center(child: SizedBox(width: 240, child: ElevatedButton(
+                onPressed: () => _submit(runner), child: Text(l.encStartEncoding)))),
           ],
         )),
       )),
@@ -761,7 +823,10 @@ class _FormatToggle extends StatelessWidget {
   final EncodeFormat value;
   final String bothLabel;
   final ValueChanged<EncodeFormat> onChanged;
-  const _FormatToggle({required this.value, required this.bothLabel, required this.onChanged});
+  final Set<EncodeFormat> disabled;   // greyed out (e.g. DASH for dual-ladder)
+  final String disabledTip;
+  const _FormatToggle({required this.value, required this.bothLabel,
+      required this.onChanged, this.disabled = const {}, this.disabledTip = ''});
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -770,15 +835,20 @@ class _FormatToggle extends StatelessWidget {
       padding: const EdgeInsets.all(3),
       child: Row(children: EncodeFormat.values.map((fmt) {
         final sel = fmt == value;
+        final enabled = !disabled.contains(fmt);
         final lbl = switch (fmt) { EncodeFormat.hls => 'HLS', EncodeFormat.dash => 'DASH', EncodeFormat.both => bothLabel };
-        return Expanded(child: GestureDetector(onTap: () => onChanged(fmt),
-          child: AnimatedContainer(duration: const Duration(milliseconds: 150),
+        final child = AnimatedContainer(duration: const Duration(milliseconds: 150),
             padding: const EdgeInsets.symmetric(vertical: 8),
             decoration: BoxDecoration(color: sel ? const Color(0xFF00d4aa) : Colors.transparent,
                 borderRadius: BorderRadius.circular(5)),
             alignment: Alignment.center,
-            child: Text(lbl, style: TextStyle(color: sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
-                fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)))));
+            child: Text(lbl, style: TextStyle(
+                color: !enabled ? const Color(0xFF555c6b)
+                     : sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
+                fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)));
+        return Expanded(child: enabled
+          ? GestureDetector(onTap: () => onChanged(fmt), child: child)
+          : Opacity(opacity: 0.45, child: Tooltip(message: disabledTip, child: child)));
       }).toList()),
     );
   }
@@ -799,14 +869,15 @@ class _OutputToggle extends StatelessWidget {
         final sel = o == value;
         final enabled = valid.contains(o);
         final child = AnimatedContainer(duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
           decoration: BoxDecoration(color: sel ? const Color(0xFF00d4aa) : Colors.transparent,
               borderRadius: BorderRadius.circular(5)),
           alignment: Alignment.center,
-          child: Text(o.label, style: TextStyle(
+          child: Text(o.toggleLabel, textAlign: TextAlign.center, maxLines: 2,
+              softWrap: true, style: TextStyle(
               color: !enabled ? const Color(0xFF555c6b)
                    : sel ? const Color(0xFF0a0c0f) : const Color(0xFFb8bfcf),
-              fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.3)));
+              fontSize: 10, height: 1.15, fontWeight: FontWeight.w700, letterSpacing: 0.3)));
         return Expanded(child: enabled
           ? GestureDetector(onTap: () => onChanged(o), child: child)
           : Opacity(opacity: 0.45, child: Tooltip(

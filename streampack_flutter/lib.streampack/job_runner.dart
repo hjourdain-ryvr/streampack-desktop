@@ -245,12 +245,33 @@ class JobRunner extends ChangeNotifier {
     ValidationResult? dashResult;
 
     if (job.format == EncodeFormat.hls || job.format == EncodeFormat.both) {
+      // RFC 6381 audio codec tag per kept rendition, in stream order - drives
+      // per-codec audio groups in the master (browser/hls.js compatibility).
+      final audioCodecs = job.audioPlan
+          .where((s) => s.action != AudioAction.remove)
+          .map((s) => s.hlsCodecTag)
+          .toList();
+      // Warn (do not auto-fix) when a multi-audio master has no AAC rendition:
+      // hls.js in Chrome/Firefox can't decode ac-3/ec-3, so browser playback of
+      // the H.264/SDR ladder will have no audio. Native players are unaffected.
+      if (audioCodecs.isNotEmpty && !audioCodecs.contains('mp4a.40.2')) {
+        job.warning = 'No AAC audio track: browsers (hls.js) cannot play the '
+            'audio. Add an AAC track in the Advanced tab for browser playback.';
+      }
       try {
         await promoteHlsMaster(
             input: job.input, outputDir: job.hlsOutputDir,
-            videoRange: output == VideoOutput.h265Hdr ? 'PQ' : 'SDR',
+            // Dual-ladder variants carry per-variant VIDEO-RANGE (set inside
+            // promoteHlsMaster from the hdr_/sdr_ name marker); this is the
+            // default for single-ladder masters.
+            videoRange: output.isHdr ? 'PQ' : 'SDR',
             frameRate: frameRate,
-            stemOverride: segStem, masterName: masterName);
+            stemOverride: segStem, masterName: masterName,
+            audioCodecs: audioCodecs,
+            // Force AAC as the default only for the mixed H.265-HDR + H.264-SDR
+            // ladder (the browser-facing one); other modes respect the user's
+            // chosen default track.
+            aacDefault: output == VideoOutput.h265HdrH264Sdr);
         hlsResult = await validateM3u8(
             '${job.hlsOutputDir}${Platform.pathSeparator}$masterName.m3u8');
       } catch (e) {

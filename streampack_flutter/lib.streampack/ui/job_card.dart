@@ -149,6 +149,23 @@ class _JobCardState extends State<JobCard> {
             ),
           ],
 
+          // Non-fatal advisory (e.g. no browser-playable audio)
+          if (job.warning != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: yellow.withOpacity(0.08),
+                  border: Border.all(color: yellow.withOpacity(0.2)),
+                  borderRadius: BorderRadius.circular(6)),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(Icons.warning_amber, color: yellow, size: 13),
+                const SizedBox(width: 6),
+                Expanded(child: Text(job.warning!,
+                    style: TextStyle(color: yellow, fontSize: 10, fontFamily: 'monospace'))),
+              ]),
+            ),
+          ],
+
           // Error
           if (job.error != null) ...[
             const SizedBox(height: 8),

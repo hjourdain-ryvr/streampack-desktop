@@ -27,7 +27,7 @@
 # =============================================================================
 
 # ── Versions (pin for reproducible builds) ────────────────────────────────────
-ARG FFMPEG_VERSION=7.1.3
+ARG FFMPEG_VERSION=7.1.4
 ARG X264_VERSION=stable
 ARG NASM_VERSION=2.16.01
 
@@ -51,6 +51,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y --no
     upx-ucl \
     # Needed by x264 configure
     yasm \
+    # libzimg: zscale/tonemap CPU HDR->SDR fallback (Linux; Windows is cross-built)
+    libzimg-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install NASM (newer than Debian's packaged version — required by x264)
@@ -134,8 +136,16 @@ RUN git clone --depth 1 --branch "${X265_VERSION}" \
 RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.bz2" \
     | tar -xj
 
+# Jellyfin CUDA tone-mapping patch chain (0002 cuda header -> 0003 enhanced
+# scale_cuda/pixfmt -> 0004 tonemap_cuda). Enables GPU HDR->SDR (tonemap_cuda).
+COPY ffmpeg-patches/ /tmp/ffmpeg-patches/
 RUN cd "ffmpeg-${FFMPEG_VERSION}" \
-    && PKG_CONFIG_PATH=/build/linux-prefix/lib/pkgconfig \
+    && for p in /tmp/ffmpeg-patches/000*.patch; do \
+         echo "== applying $(basename "$p") ==" && patch -p1 < "$p"; \
+       done
+
+RUN cd "ffmpeg-${FFMPEG_VERSION}" \
+    && PKG_CONFIG_PATH=/build/linux-prefix/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig \
        ./configure \
          --prefix=/build/linux-out \
          --pkg-config-flags="--static" \
@@ -224,6 +234,15 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --enable-muxer=mpegts \
          --enable-muxer=null \
          \
+         `# HDR->SDR tone-mapping: GPU tonemap_cuda (Jellyfin patch) + CPU` \
+         `# zscale/tonemap fallback (libzimg).` \
+         --enable-libzimg \
+         --enable-filter=tonemap_cuda \
+         --enable-filter=zscale \
+         --enable-filter=tonemap \
+         --enable-filter=format \
+         --enable-filter=colorspace \
+         \
          `# Filters — only what the StreamPack filter graph uses` \
          --enable-filter=scale \
          --enable-filter=scale_cuda \
@@ -297,6 +316,10 @@ ARG NV_CODEC_TAG=n12.1.14.0
 RUN DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y --no-install-recommends \
     mingw-w64 \
     mingw-w64-tools \
+    `# autotools + libtool: cross-build zimg (zscale/tonemap dep) for Windows` \
+    autoconf \
+    automake \
+    libtool \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -375,11 +398,36 @@ RUN git clone --depth 1 --branch "${X265_VERSION}" \
     `# drop -lgcc_s so ffmpeg links the STATIC libgcc (no libgcc_s_seh-1.dll dependency)` \
     && sed -i 's/-lgcc_s//g' ${PREFIX}/lib/pkgconfig/x265.pc
 
+# ── Build zimg for Windows (libzimg -> zscale/tonemap CPU HDR->SDR path) ───────
+# The Linux stage uses the distro libzimg-dev; Windows is cross-built from
+# source. Static, C++ (linked with -lstdc++ in the ffmpeg link flags below).
+ARG ZIMG_VERSION=release-3.0.5
+RUN git clone --depth 1 --branch "${ZIMG_VERSION}" \
+      https://github.com/sekrit-twc/zimg.git zimg-win \
+    && cd zimg-win \
+    && ./autogen.sh \
+    && ./configure \
+         --host=${HOST} \
+         --prefix=${PREFIX} \
+         --enable-static \
+         --disable-shared \
+    && make -j"$(nproc)" \
+    && make install
+
 # ── Build ffmpeg for Windows ──────────────────────────────────────────────────
 # Re-use the already-downloaded tarball from the linux-build stage if possible,
 # otherwise download again.
 RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.bz2" \
     | tar -xj
+
+# Apply the Jellyfin CUDA tonemap patch chain (same as the Linux stage) so the
+# Windows binary also carries tonemap_cuda for the (future) DASH GPU path; the
+# HLS dual-ladder path uses the CPU zscale/tonemap route (libzimg) enabled below.
+COPY ffmpeg-patches/ /tmp/ffmpeg-patches/
+RUN cd "ffmpeg-${FFMPEG_VERSION}" \
+    && for p in /tmp/ffmpeg-patches/000*.patch; do \
+         echo "Applying $p" && patch -p1 < "$p"; \
+       done
 
 RUN cd "ffmpeg-${FFMPEG_VERSION}" \
     && ./configure \
@@ -466,6 +514,15 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
          --enable-muxer=mp4 \
          --enable-muxer=mpegts \
          --enable-muxer=null \
+         \
+         `# HDR->SDR tone-mapping: GPU tonemap_cuda (Jellyfin patch) + CPU` \
+         `# zscale/tonemap route (libzimg, cross-built above).` \
+         --enable-libzimg \
+         --enable-filter=tonemap_cuda \
+         --enable-filter=zscale \
+         --enable-filter=tonemap \
+         --enable-filter=format \
+         --enable-filter=colorspace \
          \
          --enable-filter=scale \
          --enable-filter=scale_cuda \

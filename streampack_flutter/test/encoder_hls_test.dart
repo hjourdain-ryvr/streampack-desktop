@@ -225,6 +225,124 @@ p_1080p.m3u8
     });
   });
 
+  group('per-codec audio groups (browser/hls.js)', () {
+    // A mixed eac3 (5.1) + aac (stereo) title with an H.264 SDR + H.265 HDR
+    // ladder. Before the fix every variant advertised ec-3 -> hls.js dropped
+    // them all. After: one group per codec, variants duplicated, so the avc1
+    // variant advertises avc1+mp4a and browsers can play it.
+    Future<String> promote(List<String> audioCodecs, {bool aacDefault = true}) async {
+      final tmp = await Directory.systemTemp.createTemp('sp_grp_');
+      const stem = 'Movie';
+      Directory('${tmp.path}/$stem').createSync(recursive: true);
+      File('${tmp.path}/$stem/master.m3u8').writeAsStringSync('''
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_0",DEFAULT=YES,LANGUAGE="eng",CHANNELS="6",URI="${stem}_a0.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_1",DEFAULT=NO,LANGUAGE="eng",CHANNELS="2",URI="${stem}_a1.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="hvc1.2.4,ec-3",AUDIO="group_aud"
+${stem}_hdr_1080p.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028,ec-3",AUDIO="group_aud"
+${stem}_sdr_1080p.m3u8
+''');
+      await promoteHlsMaster(input: '${tmp.path}/$stem.mkv', outputDir: tmp.path,
+          stemOverride: stem, audioCodecs: audioCodecs, aacDefault: aacDefault);
+      final out = File('${tmp.path}/$stem.m3u8').readAsStringSync();
+      await tmp.delete(recursive: true);
+      return out;
+    }
+
+    test('mixed eac3+aac -> per-codec groups; avc1 gets a browser-playable copy', () async {
+      final out = await promote(['ec-3', 'mp4a.40.2']); // aacDefault (mixed mode)
+      // two codec groups, none left conflated under the original id
+      expect(out.contains('GROUP-ID="aud_ec3"'), isTrue);
+      expect(out.contains('GROUP-ID="aud_aac"'), isTrue);
+      expect(out.contains('GROUP-ID="group_aud"'), isFalse);
+      // the H.264 SDR variant now has an avc1+mp4a copy referencing the aac group
+      expect(out.contains('CODECS="avc1.640028,mp4a.40.2"'), isTrue);
+      expect(RegExp(r'CODECS="avc1.640028,mp4a.40.2".*AUDIO="aud_aac"').hasMatch(out), isTrue);
+      // HDR (hvc1) variant is duplicated across both groups too (full per-codec)
+      expect(out.contains('CODECS="hvc1.2.4,mp4a.40.2"'), isTrue);
+      expect(out.contains('CODECS="hvc1.2.4,ec-3"'), isTrue);
+      // 2 video variants x 2 groups = 4 STREAM-INF
+      expect('#EXT-X-STREAM-INF'.allMatches(out).length, 4);
+      // AAC is the sole default (browsers auto-play it, not the undecodable
+      // ec-3); every rendition is AUTOSELECT=YES for capable native players.
+      expect('DEFAULT=YES'.allMatches(out).length, 1);
+      expect(RegExp(r'GROUP-ID="aud_aac"[^\n]*DEFAULT=YES').hasMatch(out), isTrue);
+      expect(RegExp(r'GROUP-ID="aud_ec3"[^\n]*DEFAULT=YES').hasMatch(out), isFalse);
+      expect('AUTOSELECT=YES'.allMatches(out).length, 2); // both renditions
+    });
+
+    test('respect-mode keeps the user default (one per group, not forced AAC)', () async {
+      // aacDefault:false = non-mixed modes. The source default (audio_0, ec-3)
+      // stays default in its group; each group gets its own default.
+      final out = await promote(['ec-3', 'mp4a.40.2'], aacDefault: false);
+      expect(RegExp(r'GROUP-ID="aud_ec3"[^\n]*DEFAULT=YES').hasMatch(out), isTrue);
+      expect(RegExp(r'GROUP-ID="aud_aac"[^\n]*DEFAULT=YES').hasMatch(out), isTrue);
+      expect('DEFAULT=YES'.allMatches(out).length, 2); // one per group
+    });
+
+    test('friendly audio NAME includes the codec (distinguishes same-layout tracks)', () async {
+      final out = await promote(['ec-3', 'mp4a.40.2']);
+      expect(out.contains('NAME="English 5.1 (E-AC-3)"'), isTrue);
+      expect(out.contains('NAME="English Stereo (AAC)"'), isTrue);
+    });
+
+    test('per-codec variants carry honest BANDWIDTH (video + that codec audio)', () async {
+      final tmp = await Directory.systemTemp.createTemp('sp_bw_');
+      const stem = 'grp';
+      final d = Directory('${tmp.path}/$stem')..createSync(recursive: true);
+      // Audio measured from 1s segments: ec-3 80000B -> 640000 bps, aac 16000B
+      // -> 128000 bps. Video BANDWIDTH is taken from the manifest (ffmpeg's
+      // video-only value, 800000), NOT recomputed from segments.
+      void seg(String name, int bytes) =>
+          File('${d.path}/$name').writeAsBytesSync(List<int>.filled(bytes, 0));
+      void playlist(String name, String segName) =>
+          File('${d.path}/$name').writeAsStringSync(
+              '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n'
+              '#EXTINF:1.000,\n$segName\n#EXT-X-ENDLIST\n');
+      seg('${stem}_a0_000.m4s', 80000);
+      seg('${stem}_a1_000.m4s', 16000);
+      playlist('${stem}_a0.m3u8', '${stem}_a0_000.m4s');
+      playlist('${stem}_a1.m3u8', '${stem}_a1_000.m4s');
+      File('${d.path}/master.m3u8').writeAsStringSync('''
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_0",DEFAULT=YES,LANGUAGE="eng",CHANNELS="6",URI="${stem}_a0.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_1",DEFAULT=NO,LANGUAGE="eng",CHANNELS="2",URI="${stem}_a1.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=800000,AVERAGE-BANDWIDTH=800000,RESOLUTION=1920x1080,CODECS="avc1.640028,ec-3,mp4a.40.2",AUDIO="group_aud"
+${stem}_v.m3u8
+''');
+      await promoteHlsMaster(input: '${tmp.path}/$stem.mkv', outputDir: tmp.path,
+          stemOverride: stem, masterName: stem,
+          audioCodecs: ['ec-3', 'mp4a.40.2']);
+      final out = File('${tmp.path}/$stem.m3u8').readAsStringSync();
+      // ec-3 copy: 800000 (video, from manifest) + 640000 (ec-3) = 1440000
+      expect(RegExp(r'BANDWIDTH=1440000\b.*AUDIO="aud_ec3"').hasMatch(out), isTrue);
+      // aac copy: 800000 + 128000 = 928000  (honestly lower than the ec-3 copy)
+      expect(RegExp(r'BANDWIDTH=928000\b.*AUDIO="aud_aac"').hasMatch(out), isTrue);
+      expect(out.contains('BANDWIDTH=800000,'), isFalse); // base augmented, not left bare
+      await tmp.delete(recursive: true);
+    });
+
+    test('single-codec plan is left as one group (no duplication)', () async {
+      final out = await promote(['mp4a.40.2', 'mp4a.40.2']);
+      expect(out.contains('GROUP-ID="group_aud"'), isTrue); // unchanged
+      expect(out.contains('aud_mp4a'), isFalse);
+      expect('#EXT-X-STREAM-INF'.allMatches(out).length, 2); // not duplicated
+    });
+  });
+
+  test('AudioSelection.hlsCodecTag maps transcode + passthrough codecs', () {
+    expect(AudioSelection(sourceOrder: 0).hlsCodecTag, 'mp4a.40.2'); // aac transcode
+    expect(AudioSelection(sourceOrder: 0, target: AudioTarget.eac3).hlsCodecTag, 'ec-3');
+    expect(AudioSelection(sourceOrder: 0, target: AudioTarget.ac3).hlsCodecTag, 'ac-3');
+    expect(AudioSelection(sourceOrder: 0, action: AudioAction.passthrough,
+        sourceCodec: 'eac3').hlsCodecTag, 'ec-3');
+    expect(AudioSelection(sourceOrder: 0, action: AudioAction.passthrough,
+        sourceCodec: 'ac3').hlsCodecTag, 'ac-3');
+  });
+
   test('promoteDashManifest adds friendly de-duped audio Labels', () async {
     final tmp = await Directory.systemTemp.createTemp('sp_dash_');
     const stem = 'Movie';
@@ -250,5 +368,122 @@ p_1080p.m3u8
     expect('<Label>'.allMatches(out).length, 4);
 
     await tmp.delete(recursive: true);
+  });
+
+  group('HDR+SDR dual ladder', () {
+    final res = [kPresets[0], kPresets[1], kPresets[2]]; // 2160, 1080, 720
+    List<String> dl(VideoOutput out, {bool nvenc = false,
+        List<AudioSelection> plan = const []}) =>
+      buildHlsCmd(input: '/in.mkv', outputDir: '/out', resolutions: res,
+        segmentDuration: 6, nvenc: nvenc, quality: EncodeQuality.balanced,
+        output: out, inputColor: InputColor.hdr,
+        hdrMeta: const HdrMetadata(), audioPlan: plan);
+
+    test('single split, one tone-map, HDR rungs before SDR rungs', () {
+      final c = dl(VideoOutput.h265HdrSdr);
+      final fc = c[c.indexOf('-filter_complex') + 1];
+      expect('[0:v]split=2'.allMatches(fc).length, 1);
+      expect('tonemap=hable'.allMatches(fc).length, 1); // applied once
+      // HDR ladder scales the bt2020 source; SDR ladder scales the tone-mapped.
+      expect(fc.contains('[hdrsrc]split=3'), isTrue);
+      expect(fc.contains('[sdrtm]split=3'), isTrue);
+    });
+
+    test('HEVC dual: SDR ladder mirrors HDR (both full 2160/1080/720)', () {
+      final vsm = _varStreamMap(dl(VideoOutput.h265HdrSdr));
+      expect(vsm.contains('name:hdr_2160p'), isTrue);
+      expect(vsm.contains('name:sdr_2160p'), isTrue);
+      expect(vsm.contains('name:sdr_720p'), isTrue);
+      // 6 video variants: 3 HDR + 3 SDR
+      expect('name:hdr_'.allMatches(vsm).length, 3);
+      expect('name:sdr_'.allMatches(vsm).length, 3);
+    });
+
+    test('H.264 SDR ladder is capped at 1080p (no 2160p SDR rung)', () {
+      final vsm = _varStreamMap(dl(VideoOutput.h265HdrH264Sdr));
+      expect(vsm.contains('name:hdr_2160p'), isTrue); // HDR keeps 4K
+      expect(vsm.contains('name:sdr_2160p'), isFalse); // SDR capped
+      expect('name:sdr_'.allMatches(vsm).length, 2);   // 1080 + 720
+    });
+
+    test('HDR rungs are HEVC/PQ; SDR rungs are the SDR codec + bt709', () {
+      final c = dl(VideoOutput.h265HdrH264Sdr).join(' ');
+      // HDR rung 0: HEVC 10-bit PQ
+      expect(c.contains('-c:v:0 libx265'), isTrue);
+      expect(c.contains('transfer=smpte2084'), isTrue);
+      expect(c.contains('-pix_fmt:v:0 yuv420p10le'), isTrue);
+      // First SDR rung (index 3) is H.264, 8-bit, tagged bt709
+      expect(c.contains('-c:v:3 libx264'), isTrue);
+      expect(c.contains('-color_trc:v:3 bt709'), isTrue);
+    });
+
+    test('single bitrate control maps the H.264 SDR ladder to its own tier', () {
+      // resolutions 2160/1080/720 -> HDR rungs v:0,1,2 ; SDR (<=1080) v:3,4
+      final c = buildHlsCmd(
+        input: '/in.mkv', outputDir: '/out',
+        resolutions: [kPresets[0], kPresets[1], kPresets[2]],
+        segmentDuration: 6, nvenc: false, quality: EncodeQuality.balanced,
+        output: VideoOutput.h265HdrH264Sdr, inputColor: InputColor.hdr,
+        hdrMeta: const HdrMetadata(),
+        videoQuality: const VideoQuality(bitrate4kKbps: 15000),
+      );
+      String after(String f) => c[c.indexOf(f) + 1];
+      // HDR HEVC 1080p (v:1): the H.265 anchor + 15% HDR bump.
+      expect(after('-b:v:1'), '${scaledVideoBitrateKbps(15000, 1920, 1080, hdr: true)}k');
+      // SDR H.264 1080p (v:3): the AVC anchor at the same tier (15000 -> 24000),
+      // no HDR bump -> higher than the HDR HEVC rung, not lower.
+      expect(after('-b:v:3'), '${scaledVideoBitrateKbps(24000, 1920, 1080)}k');
+    });
+
+    test('HEVC+HEVC dual shares the anchor for the SDR ladder', () {
+      // resolutions 1080/720 -> HDR v:0,1 ; SDR v:2,3
+      final c = buildHlsCmd(
+        input: '/in.mkv', outputDir: '/out',
+        resolutions: [kPresets[1], kPresets[2]],
+        segmentDuration: 6, nvenc: false, quality: EncodeQuality.balanced,
+        output: VideoOutput.h265HdrSdr, inputColor: InputColor.hdr,
+        hdrMeta: const HdrMetadata(),
+        videoQuality: const VideoQuality(bitrate4kKbps: 15000),
+      );
+      String after(String f) => c[c.indexOf(f) + 1];
+      expect(after('-b:v:0'), '${scaledVideoBitrateKbps(15000, 1920, 1080, hdr: true)}k'); // HDR +15%
+      expect(after('-b:v:2'), '${scaledVideoBitrateKbps(15000, 1920, 1080)}k');            // SDR same anchor
+    });
+
+    test('empty audio plan muxes AAC per variant (v:i,a:i)', () {
+      final vsm = _varStreamMap(dl(VideoOutput.h265HdrSdr));
+      expect(vsm.contains('v:0,a:0,name:hdr_2160p'), isTrue);
+      expect(vsm.contains('v:5,a:5,name:sdr_720p'), isTrue);
+    });
+
+    test('audio plan -> shared group, all 6 video variants reference it', () {
+      final plan = [
+        AudioSelection(sourceOrder: 0, language: 'eng', isDefault: true),
+        AudioSelection(sourceOrder: 1, language: 'fra'),
+      ];
+      final vsm = _varStreamMap(dl(VideoOutput.h265HdrSdr, plan: plan));
+      expect('agroup:aud'.allMatches(vsm).length, 6 + 2); // 6 video + 2 audio
+      expect('default:yes'.allMatches(vsm).length, 1);
+    });
+
+    test('promote sets per-variant VIDEO-RANGE (PQ for hdr_, SDR for sdr_)', () async {
+      final tmp = await Directory.systemTemp.createTemp('sp_dual_');
+      const stem = 'Movie';
+      Directory('${tmp.path}/$stem').createSync(recursive: true);
+      File('${tmp.path}/$stem/master.m3u8').writeAsStringSync('''
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="hvc1.2.4"
+${stem}_hdr_1080p.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="avc1.640028"
+${stem}_sdr_720p.m3u8
+''');
+      await promoteHlsMaster(input: '${tmp.path}/$stem.mkv', outputDir: tmp.path,
+          videoRange: 'PQ', stemOverride: stem);
+      final out = File('${tmp.path}/$stem.m3u8').readAsStringSync();
+      expect('VIDEO-RANGE=PQ'.allMatches(out).length, 1);  // the hdr_ variant
+      expect('VIDEO-RANGE=SDR'.allMatches(out).length, 1);  // the sdr_ variant
+      await tmp.delete(recursive: true);
+    });
   });
 }

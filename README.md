@@ -11,14 +11,14 @@ by CMake during `flutter build`.
 
 - **HLS and DASH encoding** — produce adaptive streaming content ready to serve
 - **Format selector** — HLS, DASH, or Both in a single pass
-- **Video output** — H.264 (SDR), H.265 (SDR), or H.265 (HDR); HDR is preserved (not tone-mapped), gated by the source
+- **Video output** — H.264 (SDR), H.265 (SDR), H.265 (HDR), or, for HDR sources, a dual **HDR+SDR ladder** (`H.265 (HDR+SDR)` or `H.265 (HDR) + H.264 (SDR)`) that emits a tone-mapped SDR rendition alongside the HDR one in a single pass (HLS); output is gated by the source
 - **Quality toggle** — Balanced (`p4`/`medium`) or Best (`p6`/`slow`)
 - **Rendition picker** — 240p through 4K, upscale prevention built in
 - **Advanced tab (single file)** — per-track audio (transcode to AAC / AC-3 / E-AC-3, passthrough, remove, channel layout, language, default), and per-job video quality (target bitrate or CRF, plus encoder effort)
-- **Multi-audio output** — HLS alternate-audio rendition groups and DASH per-track AdaptationSets, with friendly, de-duplicated track labels
+- **Multi-audio output** — HLS **per-codec** alternate-audio rendition groups (one group per codec, so browsers / hls.js get a playable AAC track while native players keep E-AC-3 / AC-3), plus DASH per-track AdaptationSets; friendly, codec-labelled track names (e.g. "English 5.1 (E-AC-3)") and honest per-variant `BANDWIDTH`
 - **Multiple file input** — select multiple files at once; each becomes a separate job sharing the same settings; renditions constrained to the smallest source
 - **Job queue** — run and monitor multiple encode jobs with progress, elapsed time, ETA, per-job cancel and cancel all
-- **Manifest validator** — validate local `.m3u8` or `.mpd` files, or remote URLs
+- **Manifest validator** — validate local `.m3u8` or `.mpd` files, or remote URLs; understands alternate audio rendition groups (verifies audio via renditions, not just muxed streams)
 - **Localization** — English, Deutsch, Svenska, Français (runtime switching, no restart)
 
 ### NVIDIA GPU acceleration
@@ -55,6 +55,9 @@ The bundled ffmpeg includes:
 - `h264_nvenc` / `hevc_nvenc` — NVIDIA GPU encoding (NVENC)
 - `scale_cuda` — NVIDIA GPU scaling (requires `--enable-cuda-llvm`, uses `clang`)
 - `scale`, `setsar`, `setdar`, `split`, `pad` — CPU filters
+- `zscale` / `tonemap` (libzimg) + `tonemap_cuda` — HDR→SDR tone-mapping for the
+  dual HDR+SDR ladder (CPU route via libzimg; GPU `tonemap_cuda` via the Jellyfin
+  patch chain in `ffmpeg-patches/`)
 - HLS and DASH muxers, common demuxers and decoders
 
 ```bash
@@ -175,10 +178,10 @@ build\windows\x64\runner\Release\ffprobe.exe
 An [Inno Setup](https://jrsoftware.org/isinfo.php) script is included:
 
 ```bat
-iscc streampack-3.1.0.iss
+iscc streampack-3.2.0.iss
 ```
 
-Output: `installer\StreamPack-3.1.0-Setup.exe`
+Output: `installer\StreamPack-3.2.0-Setup.exe`
 
 ---
 
@@ -190,7 +193,7 @@ streampack-desktop/
 ├── build-ffmpeg.sh              ← convenience script wrapping Docker
 ├── setup.sh                     ← Linux: copies lib.streampack/→lib/ and patches CMakeLists.txt
 ├── setup.ps1                    ← Windows: same as setup.sh but PowerShell
-├── streampack-3.1.0.iss         ← Inno Setup installer script
+├── streampack-3.2.0.iss         ← Inno Setup installer script
 ├── README.md                    ← this file
 ├── vendor/                      ← built ffmpeg binaries (git-ignored)
 │   ├── linux/
@@ -268,10 +271,10 @@ appimagetool StreamPack.AppDir StreamPack-x86_64.AppImage
 ### Windows — installer
 
 ```bat
-iscc streampack-3.1.0.iss
+iscc streampack-3.2.0.iss
 ```
 
-Produces a per-user installer (`installer\StreamPack-3.1.0-Setup.exe`) that
+Produces a per-user installer (`installer\StreamPack-3.2.0-Setup.exe`) that
 bundles the executable, all Flutter DLLs, ffmpeg, ffprobe, and assets.
 
 ### Windows — zip

@@ -122,16 +122,66 @@ class VideoQuality {
 // reduced 10→8 for free; HDR sources can't target H.264). H.265 preserves the
 // input's bit-depth, and H.265 (HDR) additionally preserves the HDR signal.
 
-enum VideoOutput { h264Sdr, h265Sdr, h265Hdr }
+enum VideoOutput { h264Sdr, h265Sdr, h265Hdr, h265HdrSdr, h265HdrH264Sdr }
 
 extension VideoOutputInfo on VideoOutput {
   String get label => switch (this) {
-    VideoOutput.h264Sdr => 'H.264 (SDR)',
-    VideoOutput.h265Sdr => 'H.265 (SDR)',
-    VideoOutput.h265Hdr => 'H.265 (HDR)',
+    VideoOutput.h264Sdr       => 'H.264 (SDR)',
+    VideoOutput.h265Sdr       => 'H.265 (SDR)',
+    VideoOutput.h265Hdr       => 'H.265 (HDR)',
+    VideoOutput.h265HdrSdr    => 'H.265 (HDR+SDR)',
+    VideoOutput.h265HdrH264Sdr=> 'H.265 (HDR) + H.264 (SDR)',
+  };
+  /// Compact two-line label for the (5-way) output toggle, where the full
+  /// labels above are too wide to fit side by side.
+  String get toggleLabel => switch (this) {
+    VideoOutput.h264Sdr       => 'H.264\n(SDR)',
+    VideoOutput.h265Sdr       => 'H.265\n(SDR)',
+    VideoOutput.h265Hdr       => 'H.265\n(HDR)',
+    VideoOutput.h265HdrSdr    => 'H.265\nHDR+SDR',
+    VideoOutput.h265HdrH264Sdr=> 'H.265 HDR\n+H.264 SDR',
   };
   bool get isHevc => this != VideoOutput.h264Sdr;
-  bool get isHdr  => this == VideoOutput.h265Hdr;
+  /// True for any mode that carries an HDR ladder.
+  bool get isHdr => this == VideoOutput.h265Hdr
+      || this == VideoOutput.h265HdrSdr
+      || this == VideoOutput.h265HdrH264Sdr;
+  /// True for the dual-ladder modes (HDR ladder + tone-mapped SDR ladder).
+  bool get hasSdrLadder => this == VideoOutput.h265HdrSdr
+      || this == VideoOutput.h265HdrH264Sdr;
+  /// In a dual-ladder mode, is the SDR ladder HEVC (else H.264)?
+  bool get sdrIsHevc => this == VideoOutput.h265HdrSdr;
+}
+
+// ── Dual-ladder helpers (shared by the encoder and the UI preview) ──────────
+// The single Advanced bitrate control is expressed as an H.265 4K anchor. Each
+// ladder of a dual-ladder output derives its own rate from it:
+//   - the HDR (H.265) ladder uses the anchor directly (+15% HDR bump applied by
+//     the encoder);
+//   - the SDR ladder uses [sdrAnchorKbps] - identical for HEVC SDR, or the
+//     proportionally higher H.264 anchor at the same tier for H.264 SDR (the
+//     two anchor tables are a constant 1.6x apart = the HEVC/AVC efficiency
+//     ratio), and runs the [sdrLadderFor] rungs (H.264 capped at 1080p).
+
+/// The SDR ladder resolutions for a dual-ladder [output]. HEVC SDR mirrors the
+/// full HDR ladder; H.264 SDR is capped at 1080p (rungs above 1080p dropped,
+/// falling back to a single 1080p rung if none remain).
+List<Preset> sdrLadderFor(List<Preset> hdrRes, VideoOutput output) {
+  if (output.sdrIsHevc) return hdrRes;
+  final capped = hdrRes.where((r) => r.height <= 1080).toList();
+  if (capped.isEmpty) capped.add(kPresets[1]); // 1080p (Full HD)
+  return capped;
+}
+
+/// Map an H.265 4K bitrate anchor to the SDR ladder's codec tier. H.264 SDR
+/// uses the AVC anchor at the same tier (tables are 1.6x apart); for a custom
+/// (off-tier) value it scales by the default AVC/HEVC ratio. HEVC SDR keeps the
+/// same anchor.
+int sdrAnchorKbps(int hevcAnchorKbps, VideoOutput output) {
+  if (output.sdrIsHevc) return hevcAnchorKbps;
+  final i = kHevcBitrateAnchorsKbps.indexOf(hevcAnchorKbps);
+  if (i >= 0) return kAvcBitrateAnchorsKbps[i];
+  return (hevcAnchorKbps * kAvcDefaultAnchorKbps / kHevcDefaultAnchorKbps).round();
 }
 
 // ── Input colour classification (from ffprobe) ──────────────────────────────
@@ -159,7 +209,8 @@ extension InputColorInfo on InputColor {
   Set<VideoOutput> get validOutputs => switch (this) {
     InputColor.sdr8  => {VideoOutput.h264Sdr, VideoOutput.h265Sdr},
     InputColor.sdr10 => {VideoOutput.h264Sdr, VideoOutput.h265Sdr},
-    InputColor.hdr   => {VideoOutput.h265Hdr},
+    InputColor.hdr   => {VideoOutput.h265Hdr, VideoOutput.h265HdrSdr,
+                         VideoOutput.h265HdrH264Sdr},
   };
 
   VideoOutput get defaultOutput =>
@@ -264,6 +315,8 @@ class AudioSelection {
   AudioChannelMode channels;   // used when action == transcode
   String? language;            // manifest language tag (defaults from source)
   bool isDefault;              // default audio rendition flag
+  final String? sourceCodec;   // source stream codec (ac3/eac3/aac/...); for
+                               // passthrough this is the emitted codec
 
   AudioSelection({
     required this.sourceOrder,
@@ -272,7 +325,22 @@ class AudioSelection {
     this.channels = AudioChannelMode.stereo,
     this.language,
     this.isDefault = false,
+    this.sourceCodec,
   });
+
+  /// The codec actually emitted into HLS/DASH for this rendition: the transcode
+  /// [target] normally, or the passthrough [sourceCodec] when copied.
+  String get emittedCodec =>
+      action == AudioAction.passthrough ? (sourceCodec ?? 'aac') : target.name;
+
+  /// RFC 6381 CODECS tag for the emitted audio (for the HLS master). Used to
+  /// group renditions by codec so browser (hls.js) variants advertise a
+  /// playable codec instead of a conflated ec-3/ac-3.
+  String get hlsCodecTag => switch (emittedCodec) {
+    'ac3'  => 'ac-3',
+    'eac3' => 'ec-3',
+    _      => 'mp4a.40.2', // aac (and any unexpected value) -> AAC-LC
+  };
 
   // 2.0.0-equivalent default: transcode to AAC stereo; first track is default.
   // Passthrough-capable tracks still default to transcode - the user opts into
@@ -284,6 +352,7 @@ class AudioSelection {
     channels: AudioChannelMode.stereo,
     language: t.language,
     isDefault: t.isDefault, // mirror the source default; corrected to one below
+    sourceCodec: t.codec,
   );
 }
 
@@ -312,6 +381,7 @@ class Job {
   double progress;        // 0.0 – 1.0
   String currentPass;     // "hls" | "dash" | ""
   String? error;
+  String? warning;        // non-fatal advisory (e.g. no browser-playable audio)
   String? skippedRenditions;      // labels of renditions skipped due to upscale
   List<Preset> activeResolutions; // resolutions actually used (after upscale filter)
   ValidationResult? validation;

@@ -98,6 +98,19 @@ Future<ValidationResult> validateM3u8(String target) async {
       }
     }
 
+    // Alternate audio rendition groups (#EXT-X-MEDIA:TYPE=AUDIO). In the
+    // multi-audio / dual-ladder layout the video variants are video-only and the
+    // audio is delivered via these groups, so a variant with no muxed audio is
+    // correct as long as it references a populated group (checked below).
+    final audioGroups = <String, List<String>>{};
+    for (final l in lines) {
+      if (l.startsWith('#EXT-X-MEDIA') && l.contains('TYPE=AUDIO')) {
+        final g = RegExp(r'GROUP-ID="([^"]*)"').firstMatch(l)?.group(1);
+        final u = RegExp(r'URI="([^"]*)"').firstMatch(l)?.group(1);
+        if (g != null && u != null) (audioGroups[g] ??= <String>[]).add(u);
+      }
+    }
+
     if (pairs.isEmpty) {
       fail('NO_VARIANTS', 'Master playlist has no variant streams');
     } else {
@@ -174,7 +187,16 @@ Future<ValidationResult> validateM3u8(String target) async {
         }
 
         if (audStreams.isEmpty) {
-          vwarn('NO_AUDIO', 'No audio stream found');
+          // Video-only variant: fine if it references a populated audio group
+          // (the audio is an alternate rendition, not muxed into the video).
+          final grp = RegExp(r'AUDIO="([^"]*)"').firstMatch(attrs)?.group(1);
+          if (grp != null && (audioGroups[grp]?.isNotEmpty ?? false)) {
+            vok('AUDIO_GROUP',
+                'Audio via alternate rendition group "$grp" '
+                '(${audioGroups[grp]!.length} rendition${audioGroups[grp]!.length == 1 ? '' : 's'})');
+          } else {
+            vwarn('NO_AUDIO', 'No audio stream found');
+          }
         } else {
           final a = audStreams.first as Map;
           vok('AUDIO_STREAM', 'Audio: ${a['codec_name']} ${a['sample_rate']}Hz ${a['channels']}ch');
@@ -243,6 +265,23 @@ Future<ValidationResult> validateM3u8(String target) async {
       }
       if (bandwidths.toSet().length != bandwidths.length) {
         warn('DUPLICATE_BANDWIDTH', 'Two or more variants declare identical BANDWIDTH values');
+      }
+    }
+
+    // Verify each alternate audio rendition group actually carries audio.
+    for (final entry in audioGroups.entries) {
+      final probe   = await ffprobeJson(resolveRef(target, entry.value.first));
+      final streams = (probe?['streams'] as List?) ?? [];
+      final aud = streams.cast<Map>().firstWhere(
+          (s) => s['codec_type'] == 'audio', orElse: () => const {});
+      final n = entry.value.length;
+      if (aud.isNotEmpty) {
+        ok('AUDIO_RENDITION',
+           'Audio group "${entry.key}": ${aud['codec_name']} ${aud['channels']}ch '
+           '($n rendition${n == 1 ? '' : 's'})');
+      } else {
+        warn('AUDIO_RENDITION_EMPTY',
+           'Audio group "${entry.key}" rendition has no audio stream');
       }
     }
   }

@@ -54,6 +54,11 @@ class AppLocalizations {
   String get encSourceSize        => const {'de':'Quelle','sv':'Källa','fr':'Source'}[lang.code] ?? 'Source';
   String get encFormat            => const {'de':'Format','sv':'Format','fr':'Format'}[lang.code] ?? 'Format';
   String get encFormatBoth        => const {'de':'Beide','sv':'Båda','fr':'Les deux'}[lang.code] ?? 'Both';
+  String get encDashUnavailableDual => const {
+        'de':'DASH ist für HDR+SDR-Ausgabe noch nicht verfügbar (nur HLS)',
+        'sv':'DASH är inte tillgängligt för HDR+SDR-utdata ännu (endast HLS)',
+        'fr':'DASH n\'est pas encore disponible pour la sortie HDR+SDR (HLS uniquement)',
+      }[lang.code] ?? 'DASH is not available for HDR+SDR output yet (HLS only)';
   String get encQuality           => const {'de':'Qualität','sv':'Kvalitet','fr':'Qualité'}[lang.code] ?? 'Quality';
   String get encQualityBalanced   => const {'de':'Ausgewogen','sv':'Balanserad','fr':'Équilibré'}[lang.code] ?? 'Balanced';
   String get encQualityHigh       => const {'de':'Hoch','sv':'Hög','fr':'Haute'}[lang.code] ?? 'High';

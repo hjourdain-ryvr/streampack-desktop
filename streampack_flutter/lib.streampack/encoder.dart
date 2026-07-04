@@ -300,7 +300,8 @@ List<String> _rateCtl(int i, Preset r, _OutSpec spec, VideoQuality? vq,
 
 List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
     {required bool nvenc, required bool gpuFrames,
-     required EncodeQuality quality, HdrMetadata? hdr, VideoQuality? vq}) {
+     required EncodeQuality quality, HdrMetadata? hdr, VideoQuality? vq,
+     bool sdrTags = false}) {
   // Effort/preset: Advanced override carries its own; Basic uses EncodeQuality.
   final nvPreset  = vq?.effort.nvencPreset ?? quality.nvencPreset;
   final cpuPreset = vq?.effort.cpuPreset   ?? quality.x264Preset;
@@ -322,6 +323,14 @@ List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
         '-color_primaries:v:$i', 'bt2020',
         '-color_trc:v:$i', 'smpte2084',
         '-color_range:v:$i', 'tv',
+      ]
+      // Tone-mapped SDR rung: tag bt709 explicitly so players/manifests report
+      // SDR (the tonemap chain already outputs bt709 frames).
+      else if (sdrTags) ...[
+        '-colorspace:v:$i', 'bt709',
+        '-color_primaries:v:$i', 'bt709',
+        '-color_trc:v:$i', 'bt709',
+        '-color_range:v:$i', 'tv',
       ],
     ];
   }
@@ -333,6 +342,8 @@ List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
                      'colormatrix=bt2020nc', 'hdr10=1', 'repeat-headers=1']);
       if (hdr?.masterDisplay != null) params.add('master-display=${hdr!.masterDisplay}');
       if (hdr?.maxCll != null)        params.add('max-cll=${hdr!.maxCll}');
+    } else if (sdrTags) {
+      params.addAll(['colorprim=bt709', 'transfer=bt709', 'colormatrix=bt709']);
     }
     return [
       '-c:v:$i', 'libx265',
@@ -348,6 +359,11 @@ List<String> _videoEncoderArgs(int i, Preset r, _OutSpec spec,
     '-c:v:$i', 'libx264',
     '-preset:v:$i', quality.x264Preset,
     '-pix_fmt:v:$i', 'yuv420p',
+    if (sdrTags) ...[
+      '-colorspace:v:$i', 'bt709',
+      '-color_primaries:v:$i', 'bt709',
+      '-color_trc:v:$i', 'bt709',
+    ],
     ..._rateCtl(i, r, spec, vq, nvenc: false),
   ];
 }
@@ -489,6 +505,104 @@ List<String> _streamArgs(List<Preset> resolutions, _OutSpec spec,
   return args;
 }
 
+// === HDR+SDR dual ladder (3.2.0) =============================================
+// Produce an HDR (HEVC/PQ) ladder AND a tone-mapped SDR ladder in one pass, so
+// Apple HLS clients that reject HDR still get an SDR rung. HLS always operates
+// on CPU frames, so tone-mapping is done on the CPU with libzimg (zscale) +
+// the Hable operator - this drives both NVENC and libx26x SDR encoding.
+
+/// CPU HDR->SDR tone-map chain (PQ/BT.2020 -> BT.709). Applied once to the SDR
+/// source split, then fanned out to the SDR rungs.
+const _cpuTonemap =
+    'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,'
+    'tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p';
+
+/// Build the dual-ladder video filter graph, per-rung video encoder args, and
+/// per-rung variant names. HDR rungs are the low output indices (0..H-1),
+/// tone-mapped SDR rungs follow (H..H+S-1). Variant names carry an `hdr_`/`sdr_`
+/// prefix so [promoteHlsMaster] can set per-variant VIDEO-RANGE.
+({List<String> filter, List<String> videoArgs, List<String> names})
+    _dualLadderVideo(
+  List<Preset> hdrRes,
+  List<Preset> sdrRes,
+  VideoOutput output,
+  InputColor inputColor, {
+  required bool nvenc,
+  required EncodeQuality quality,
+  HdrMetadata? hdrMeta,
+  VideoQuality? vq,
+}) {
+  final hdrSpec = _OutSpec.from(VideoOutput.h265Hdr, inputColor); // HEVC/10/HDR
+  final sdrSpec = output.sdrIsHevc
+      ? const _OutSpec(true, false, false)   // HEVC SDR, 8-bit
+      : const _OutSpec(false, false, false); // H.264 SDR, 8-bit
+  // The single (H.265) bitrate anchor maps to the SDR ladder's own codec tier
+  // (H.264 SDR gets the proportionally higher AVC anchor); CRF is shared (its
+  // per-codec cap is already handled in _rateCtl). See [sdrAnchorKbps].
+  final sdrVq = (vq != null && !output.sdrIsHevc &&
+                 vq.mode == VideoQualityMode.bitrate)
+      ? VideoQuality(mode: vq.mode, crf: vq.crf, effort: vq.effort,
+          bitrate4kKbps: sdrAnchorKbps(vq.bitrate4kKbps, output))
+      : vq;
+  final h = hdrRes.length, s = sdrRes.length;
+
+  String scale(String inLbl, Preset r, String outLbl) =>
+      '[$inLbl]scale=${r.width}:${r.height}'
+      ':force_original_aspect_ratio=decrease:force_divisible_by=2[$outLbl]';
+
+  final g = StringBuffer('[0:v]split=2[hdrsrc][sdrsrc];');
+  g.write('[hdrsrc]split=$h${[for (var i = 0; i < h; i++) '[hin$i]'].join()};');
+  for (var i = 0; i < h; i++) g.write('${scale('hin$i', hdrRes[i], 'hdr$i')};');
+  g.write('[sdrsrc]$_cpuTonemap[sdrtm];');
+  g.write('[sdrtm]split=$s${[for (var j = 0; j < s; j++) '[sin$j]'].join()};');
+  for (var j = 0; j < s; j++) {
+    g.write(scale('sin$j', sdrRes[j], 'sdr$j'));
+    if (j < s - 1) g.write(';');
+  }
+
+  final videoArgs = <String>[];
+  final names = <String>[];
+  for (var i = 0; i < h; i++) {
+    videoArgs.addAll([
+      '-map', '[hdr$i]',
+      ..._videoEncoderArgs(i, hdrRes[i], hdrSpec,
+          nvenc: nvenc, gpuFrames: false, quality: quality, hdr: hdrMeta, vq: vq),
+    ]);
+    names.add('hdr_${hdrRes[i].height}p');
+  }
+  for (var j = 0; j < s; j++) {
+    videoArgs.addAll([
+      '-map', '[sdr$j]',
+      ..._videoEncoderArgs(h + j, sdrRes[j], sdrSpec,
+          nvenc: nvenc, gpuFrames: false, quality: quality, hdr: null, vq: sdrVq,
+          sdrTags: true),
+    ]);
+    names.add('sdr_${sdrRes[j].height}p');
+  }
+  return (filter: ['-filter_complex', g.toString()], videoArgs: videoArgs, names: names);
+}
+
+/// var_stream_map for a dual ladder. Empty audio plan -> each variant muxes the
+/// single AAC audio stream (v:i,a:i); otherwise all video variants reference the
+/// shared audio rendition group.
+String _hlsVarStreamMapDual(List<String> names, List<AudioSelection> kept) {
+  final n = names.length;
+  if (kept.isEmpty) {
+    return [for (var i = 0; i < n; i++) 'v:$i,a:$i,name:${names[i]}'].join(' ');
+  }
+  const grp = 'aud';
+  var defIdx = kept.indexWhere((a) => a.isDefault);
+  if (defIdx < 0) defIdx = 0;
+  return [
+    for (var i = 0; i < n; i++) 'v:$i,agroup:$grp,name:${names[i]}',
+    for (var i = 0; i < kept.length; i++)
+      'a:$i,agroup:$grp'
+          '${kept[i].language != null ? ',language:${kept[i].language}' : ''}'
+          ',default:${i == defIdx ? 'yes' : 'no'}'
+          ',name:a${i}_${kept[i].language ?? 'und'}',
+  ].join(' ');
+}
+
 // ── HLS ───────────────────────────────────────────────────────────────────────
 
 /// Build the ffmpeg command for HLS encoding.
@@ -538,6 +652,38 @@ List<String> buildHlsCmd({
     '-master_pl_name', 'master.m3u8',
   ];
 
+  // Dual-ladder (HDR+SDR) path: HEVC/PQ ladder + tone-mapped SDR ladder in one
+  // pass. Uses fMP4 segments (segArgs already picks fMP4 since spec.hevc holds
+  // for the HDR rungs; H.264 SDR rungs are valid in fMP4/CMAF too).
+  if (output.hasSdrLadder) {
+    final sdrRes = sdrLadderFor(resolutions, output);
+    final dl = _dualLadderVideo(resolutions, sdrRes, output, inputColor,
+        nvenc: nvenc, quality: quality, hdrMeta: hdrMeta, vq: videoQuality);
+    final kept = audioPlan.where((s) => s.action != AudioAction.remove).toList();
+    final audioArgs = <String>[];
+    if (kept.isEmpty) {
+      for (var i = 0; i < dl.names.length; i++) {
+        audioArgs.addAll(['-map', '0:a:0?']);
+      }
+      for (var i = 0; i < dl.names.length; i++) {
+        audioArgs.addAll(['-c:a:$i', 'aac', '-b:a:$i', '128k',
+                          '-ac:$i', '2', '-ar:$i', '44100']);
+      }
+    } else {
+      audioArgs.addAll(_audioPlanArgs(kept));
+    }
+    return [
+      ffmpegPath(), '-y', '-i', input,
+      '-sn', '-dn',
+      ...dl.filter,
+      ...dl.videoArgs,
+      ...audioArgs,
+      ...common,
+      '-var_stream_map', _hlsVarStreamMapDual(dl.names, kept),
+      '$segDir/${stem}_%v.m3u8',
+    ];
+  }
+
   // Empty plan -> 2.0.0 path: single audio muxed into each video rendition.
   if (audioPlan.isEmpty) {
     return [
@@ -581,18 +727,28 @@ String _channelLabel(String? ch) => switch (ch) {
   _   => (ch != null && ch.isNotEmpty) ? '${ch}ch' : '',
 };
 
+/// Friendly codec label for an audio rendition NAME (e.g. "AAC", "E-AC-3").
+String _friendlyCodecLabel(String tag) => tag.startsWith('mp4a') ? 'AAC'
+    : tag == 'ec-3' ? 'E-AC-3'
+    : tag == 'ac-3' ? 'AC-3'
+    : '';
+
 /// Rewrite an #EXT-X-MEDIA:TYPE=AUDIO line: (1) NAME from ffmpeg's auto "audio_N"
-/// to a friendly "<Language> <layout>" label (e.g. "English 5.1"), de-duplicated
-/// via [used] (appends " (2)", " (3)", ...); (2) prefix the rendition URI with
-/// the [stem] subdirectory so it matches where the audio playlists actually live
-/// (same prefix the video variant URIs get). Without (2) players load the video
-/// but fail to find the audio -> video plays with NO sound.
-String _friendlyAudioMediaLine(String line, Set<String> used, String stem) {
+/// to a friendly "<Language> <layout> (<codec>)" label (e.g. "English 5.1
+/// (E-AC-3)") so the two same-layout tracks in different codec groups are
+/// distinguishable, de-duplicated via [used] (appends " (2)", ...); (2) prefix
+/// the rendition URI with the [stem] subdirectory so it matches where the audio
+/// playlists actually live. Without (2) players load the video but fail to find
+/// the audio -> video plays with NO sound.
+String _friendlyAudioMediaLine(String line, Set<String> used, String stem,
+    [String codecTag = '']) {
   final lang = RegExp(r'LANGUAGE="([^"]*)"').firstMatch(line)?.group(1);
   final ch   = RegExp(r'CHANNELS="([^"]*)"').firstMatch(line)?.group(1);
   final langName = (lang == null || lang.isEmpty || lang == 'und')
       ? '' : (_audioLangNames[lang] ?? lang.toUpperCase());
-  final parts = [langName, _channelLabel(ch)].where((s) => s.isNotEmpty).toList();
+  final codec = _friendlyCodecLabel(codecTag);
+  final parts = [langName, _channelLabel(ch), if (codec.isNotEmpty) '($codec)']
+      .where((s) => s.isNotEmpty).toList();
   var name = parts.isEmpty ? 'Audio' : parts.join(' ');
   if (used.contains(name)) {
     var n = 2;
@@ -624,6 +780,169 @@ String _augmentStreamInf(String inf, String videoRange, String frameRate) {
   return s;
 }
 
+String _basename(String p) => p.split('/').last;
+
+/// Peak and average media bit rate (bps) of an HLS media playlist, measured from
+/// its #EXTINF durations and the on-disk segment sizes. Returns null if the
+/// playlist or its segments can't be read (callers then leave BANDWIDTH as-is).
+Future<({int peak, int avg})?> _mediaBw(String playlistPath) async {
+  final f = File(playlistPath);
+  if (!await f.exists()) return null;
+  final dir = f.parent.path;
+  final sep = Platform.pathSeparator;
+  var totalBytes = 0, peak = 0;
+  var totalDur = 0.0;
+  double? dur;
+  for (final line in await f.readAsLines()) {
+    final t = line.trim();
+    if (t.startsWith('#EXTINF:')) {
+      dur = double.tryParse(RegExp(r'#EXTINF:([\d.]+)').firstMatch(t)?.group(1) ?? '');
+    } else if (t.isNotEmpty && !t.startsWith('#') && dur != null && dur > 0) {
+      final seg = File('$dir$sep${_basename(t)}');
+      final sz = await seg.exists() ? await seg.length() : 0;
+      if (sz > 0) {
+        totalBytes += sz;
+        totalDur += dur;
+        final r = (sz * 8 / dur).round();
+        if (r > peak) peak = r;
+      }
+      dur = null;
+    }
+  }
+  if (totalDur <= 0) return null;
+  return (peak: peak, avg: (totalBytes * 8 / totalDur).round());
+}
+
+/// Rewrite BANDWIDTH / AVERAGE-BANDWIDTH on a STREAM-INF line. The lookbehind
+/// keeps AVERAGE-BANDWIDTH from being matched by the plain BANDWIDTH pattern.
+String _setBandwidth(String inf, int bandwidth, int average) {
+  var s = inf.replaceFirst(RegExp(r'AVERAGE-BANDWIDTH=\d+'), 'AVERAGE-BANDWIDTH=$average');
+  s = s.replaceFirst(RegExp(r'(?<!-)BANDWIDTH=\d+'), 'BANDWIDTH=$bandwidth');
+  return s;
+}
+
+/// Rewrite the audio codec token in a STREAM-INF CODECS attribute, keeping the
+/// video token(s) and replacing any audio token with [audioTag].
+String _replaceAudioCodecTag(String inf, String audioTag) =>
+    inf.replaceFirstMapped(RegExp(r'CODECS="([^"]*)"'), (m) {
+      final video = m.group(1)!.split(',').map((t) => t.trim()).where((t) =>
+          RegExp(r'^(avc1|avc3|hvc1|hev1|dvh1|dvhe)', caseSensitive: false).hasMatch(t));
+      return 'CODECS="${[...video, audioTag].join(',')}"';
+    });
+
+/// Split a single mixed-codec audio rendition group into one group per codec and
+/// duplicate every video variant across the groups (with a codec-correct CODECS
+/// string per copy). [audioCodecs] is the RFC 6381 tag for each audio rendition
+/// in the order the #EXT-X-MEDIA:TYPE=AUDIO lines appear. Returns the inputs
+/// unchanged when there is nothing to split (0 or 1 distinct codec) or the
+/// counts don't line up (safety).
+int? _attrInt(String s, RegExp re) => int.tryParse(re.firstMatch(s)?.group(1) ?? '');
+
+({List<String> header, List<({String inf, String uri})> variants})
+    _regroupAudioByCodec(List<String> header,
+        List<({String inf, String uri})> variants, List<String> audioCodecs,
+        {List<({int peak, int avg})?> audioBw = const [],
+         bool aacDefault = false}) {
+  final audioIdx = [
+    for (var i = 0; i < header.length; i++)
+      if (header[i].trimLeft().startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) i,
+  ];
+  if (audioIdx.isEmpty ||
+      audioIdx.length != audioCodecs.length ||
+      audioCodecs.toSet().length < 2) {
+    return (header: header, variants: variants);
+  }
+
+  String gid(String tag) {
+    final slug = tag.startsWith('mp4a') ? 'aac'
+               : tag == 'ec-3' ? 'ec3'
+               : tag == 'ac-3' ? 'ac3'
+               : tag.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
+    return 'aud_$slug';
+  }
+
+  // Which rendition is DEFAULT=YES in each group:
+  //  - [aacDefault] (the H.265-HDR + H.264-SDR mode): AAC is the SOLE default, so
+  //    browsers (hls.js) - which auto-load the DEFAULT rendition and can't decode
+  //    ec-3/ac-3 - land on a playable track instead of silent video.
+  //  - otherwise: respect the user's choice - keep the rendition that was already
+  //    DEFAULT=YES within its group, falling back to the first in the group.
+  // Every rendition is AUTOSELECT=YES so capable native players can still pick a
+  // non-default surround rendition by capability.
+  final hasAac = audioCodecs.any((t) => t.startsWith('mp4a'));
+  final groupDefaultK = <String, int>{};
+  if (aacDefault && hasAac) {
+    for (var k = 0; k < audioIdx.length; k++) {
+      if (audioCodecs[k].startsWith('mp4a')) { groupDefaultK[gid(audioCodecs[k])] = k; break; }
+    }
+  } else {
+    for (var k = 0; k < audioIdx.length; k++) {
+      final g = gid(audioCodecs[k]);
+      if (header[audioIdx[k]].contains('DEFAULT=YES') && !groupDefaultK.containsKey(g)) {
+        groupDefaultK[g] = k;
+      }
+    }
+    for (var k = 0; k < audioIdx.length; k++) {
+      groupDefaultK.putIfAbsent(gid(audioCodecs[k]), () => k);
+    }
+  }
+
+  final newHeader = List<String>.from(header);
+  final groups = <String>[];           // distinct group ids, first-seen order
+  final groupCodec = <String, String>{};
+  final groupBw = <String, ({int peak, int avg})>{}; // worst-case audio per group
+  for (var k = 0; k < audioIdx.length; k++) {
+    final tag = audioCodecs[k];
+    final g = gid(tag);
+    if (!groups.contains(g)) { groups.add(g); groupCodec[g] = tag; }
+    // Track the highest-bitrate rendition in each group (a variant may play any
+    // rendition of its group, so BANDWIDTH should reflect the worst case).
+    final ab = k < audioBw.length ? audioBw[k] : null;
+    if (ab != null) {
+      final cur = groupBw[g];
+      groupBw[g] = cur == null
+          ? ab
+          : (peak: ab.peak > cur.peak ? ab.peak : cur.peak,
+             avg:  ab.avg  > cur.avg  ? ab.avg  : cur.avg);
+    }
+    var l = newHeader[audioIdx[k]]
+        .replaceFirst(RegExp(r'GROUP-ID="[^"]*"'), 'GROUP-ID="$g"');
+    final def = groupDefaultK[g] == k ? 'YES' : 'NO';
+    l = l.contains('DEFAULT=')
+        ? l.replaceFirst(RegExp(r'DEFAULT=(YES|NO)'), 'DEFAULT=$def')
+        : '$l,DEFAULT=$def';
+    // AUTOSELECT=YES on every rendition (required when DEFAULT=YES; lets capable
+    // players auto-select the non-default surround renditions).
+    l = l.contains('AUTOSELECT=')
+        ? l.replaceFirst(RegExp(r'AUTOSELECT=(YES|NO)'), 'AUTOSELECT=YES')
+        : '$l,AUTOSELECT=YES';
+    newHeader[audioIdx[k]] = l;
+  }
+
+  final bwRe  = RegExp(r'(?<!-)BANDWIDTH=(\d+)');
+  final avgRe = RegExp(r'AVERAGE-BANDWIDTH=(\d+)');
+  final newVariants = <({String inf, String uri})>[];
+  for (final v in variants) {
+    // ffmpeg's BANDWIDTH here is video-only (audio is a separate group). Keep it
+    // and ADD this group's audio bitrate, so the AAC copy and the E-AC-3 copy
+    // carry honestly different numbers. Do NOT recompute video from segments:
+    // sub-second keyframe-boundary segments would inflate a size/duration peak.
+    final vBw  = _attrInt(v.inf, bwRe);
+    final vAvg = _attrInt(v.inf, avgRe);
+    for (final g in groups) {
+      var inf = _replaceAudioCodecTag(
+          v.inf.replaceFirst(RegExp(r'AUDIO="[^"]*"'), 'AUDIO="$g"'),
+          groupCodec[g]!);
+      final ab = groupBw[g];
+      if (vBw != null && ab != null) {
+        inf = _setBandwidth(inf, vBw + ab.peak, (vAvg ?? vBw) + ab.avg);
+      }
+      newVariants.add((inf: inf, uri: v.uri));
+    }
+  }
+  return (header: newHeader, variants: newVariants);
+}
+
 Future<void> promoteHlsMaster({
   required String input,
   required String outputDir,
@@ -631,6 +950,10 @@ Future<void> promoteHlsMaster({
   String frameRate  = '',      // e.g. '23.976'; empty = omit
   String? stemOverride,        // segment dir + URIs (safe form of output name)
   String masterName = '',      // master filename (pretty form of output name)
+  List<String> audioCodecs = const [],  // RFC6381 tag per audio rendition, in
+                                        // stream order (drives per-codec groups)
+  bool aacDefault = false,     // force AAC as the sole default audio (mixed
+                               // H.265-HDR + H.264-SDR mode -> browser playback)
 }) async {
   final stem      = stemOverride ?? sanitiseStem(input);
   final sep       = Platform.pathSeparator;
@@ -646,6 +969,7 @@ Future<void> promoteHlsMaster({
   final header  = <String>[];   // lines before first variant
   final variants = <({String inf, String uri})>[];
   final usedAudioNames = <String>{};  // for de-duplicating friendly NAMEs
+  var audioSeen = 0;                   // audio rendition index -> audioCodecs
   String? pendingInf;
   bool inVariants = false;
 
@@ -658,19 +982,55 @@ Future<void> promoteHlsMaster({
       final uri = t.isNotEmpty && !t.startsWith('#') && t.endsWith('.m3u8')
           ? '$stem/$t'
           : t;
-      variants.add((inf: _augmentStreamInf(pendingInf!, videoRange, frameRate), uri: uri));
+      // Dual-ladder variants carry an hdr_/sdr_ marker in their playlist name;
+      // set VIDEO-RANGE per variant (PQ for HDR rungs, SDR for tone-mapped
+      // rungs). Single-ladder variants have no marker -> use the passed default.
+      final vr = uri.contains('_sdr_') ? 'SDR'
+               : uri.contains('_hdr_') ? 'PQ'
+               : videoRange;
+      variants.add((inf: _augmentStreamInf(pendingInf!, vr, frameRate), uri: uri));
       pendingInf = null;
     } else if (!inVariants) {
-      // Replace ffmpeg's auto "audio_N" NAME with a friendly language+layout
-      // label (e.g. "English 5.1"), de-duplicated.
-      header.add(t.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')
-          ? _friendlyAudioMediaLine(line, usedAudioNames, stem)
-          : line);
+      // Replace ffmpeg's auto "audio_N" NAME with a friendly language+layout+codec
+      // label (e.g. "English 5.1 (E-AC-3)"), de-duplicated.
+      if (t.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) {
+        final codec = audioSeen < audioCodecs.length ? audioCodecs[audioSeen] : '';
+        header.add(_friendlyAudioMediaLine(line, usedAudioNames, stem, codec));
+        audioSeen++;
+      } else {
+        header.add(line);
+      }
     }
   }
 
+  // Split a single mixed-codec audio group into one group per codec, and
+  // duplicate each video variant across the groups (correct CODECS per copy).
+  // hls.js (browsers) filters out any variant whose CODECS contains a codec MSE
+  // can't decode; conflating aac/ac-3/ec-3 in one group made every variant
+  // advertise ec-3 -> all filtered -> nothing plays. Per-codec groups let the
+  // H.264/AAC variants advertise a browser-playable codec. No-op for 0/1 codec.
+  // Measure each audio rendition's real bit rate from its segments so the
+  // per-codec variant copies add an honest, codec-specific amount to ffmpeg's
+  // video-only BANDWIDTH (best-effort; skipped if unreadable, e.g. in unit
+  // tests, leaving the value unchanged). Audio is near-CBR, so short segments
+  // don't distort it - unlike video, which is why we don't recompute video.
+  final audioBw = <({int peak, int avg})?>[];
+  if (audioCodecs.length >= 2 && audioCodecs.toSet().length >= 2) {
+    for (final l in header) {
+      if (l.trimLeft().startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) {
+        final u = RegExp(r'URI="([^"]+)"').firstMatch(l)?.group(1);
+        audioBw.add(u == null ? null : await _mediaBw('$segDir$sep${_basename(u)}'));
+      }
+    }
+  }
+
+  final rg = _regroupAudioByCodec(header, variants, audioCodecs,
+      audioBw: audioBw, aacDefault: aacDefault);
+  final outHeader = rg.header;
+  final outVariants = rg.variants;
+
   // Sort by BANDWIDTH= value ascending
-  variants.sort((a, b) {
+  outVariants.sort((a, b) {
     final bwA = RegExp(r'BANDWIDTH=(\d+)').firstMatch(a.inf)?.group(1);
     final bwB = RegExp(r'BANDWIDTH=(\d+)').firstMatch(b.inf)?.group(1);
     final ia  = int.tryParse(bwA ?? '') ?? 0;
@@ -680,14 +1040,14 @@ Future<void> promoteHlsMaster({
 
   // Apple requires EXT-X-INDEPENDENT-SEGMENTS in the master (our segments are
   // encoded independent via -hls_flags independent_segments).
-  if (!header.any((l) => l.contains('EXT-X-INDEPENDENT-SEGMENTS'))) {
-    final vIdx = header.indexWhere((l) => l.startsWith('#EXT-X-VERSION'));
-    header.insert(vIdx >= 0 ? vIdx + 1 : header.length, '#EXT-X-INDEPENDENT-SEGMENTS');
+  if (!outHeader.any((l) => l.contains('EXT-X-INDEPENDENT-SEGMENTS'))) {
+    final vIdx = outHeader.indexWhere((l) => l.startsWith('#EXT-X-VERSION'));
+    outHeader.insert(vIdx >= 0 ? vIdx + 1 : outHeader.length, '#EXT-X-INDEPENDENT-SEGMENTS');
   }
 
   final output = [
-    ...header,
-    for (final v in variants) ...[v.inf, v.uri],
+    ...outHeader,
+    for (final v in outVariants) ...[v.inf, v.uri],
     '',
   ];
 
