@@ -293,8 +293,9 @@ ${stem}_sdr_1080p.m3u8
       const stem = 'grp';
       final d = Directory('${tmp.path}/$stem')..createSync(recursive: true);
       // Audio measured from 1s segments: ec-3 80000B -> 640000 bps, aac 16000B
-      // -> 128000 bps. Video BANDWIDTH is taken from the manifest (ffmpeg's
-      // video-only value, 800000), NOT recomputed from segments.
+      // -> 128000 bps. No video segments here, so the video component falls back
+      // to the manifest value (800000). (Robust video measurement is covered by
+      // the next test.)
       void seg(String name, int bytes) =>
           File('${d.path}/$name').writeAsBytesSync(List<int>.filled(bytes, 0));
       void playlist(String name, String segName) =>
@@ -322,6 +323,52 @@ ${stem}_v.m3u8
       // aac copy: 800000 + 128000 = 928000  (honestly lower than the ec-3 copy)
       expect(RegExp(r'BANDWIDTH=928000\b.*AUDIO="aud_aac"').hasMatch(out), isTrue);
       expect(out.contains('BANDWIDTH=800000,'), isFalse); // base augmented, not left bare
+      await tmp.delete(recursive: true);
+    });
+
+    test('robust video peak ignores short keyframe-boundary segments', () async {
+      final tmp = await Directory.systemTemp.createTemp('sp_rob_');
+      const stem = 'rob';
+      final d = Directory('${tmp.path}/$stem')..createSync(recursive: true);
+      void seg(String name, int bytes) =>
+          File('${d.path}/$name').writeAsBytesSync(List<int>.filled(bytes, 0));
+      // Video: three 2.0s segments @ 500000 B (= 2_000_000 bps) plus one 0.3s
+      // fragment @ 300000 B (= 8_000_000 bps). Median dur = 2.0, so the 0.3s
+      // fragment (< 1.0) is dropped -> robust peak = 2_000_000, not 8_000_000.
+      seg('${stem}_v_000.m4s', 500000);
+      seg('${stem}_v_001.m4s', 500000);
+      seg('${stem}_v_002.m4s', 500000);
+      seg('${stem}_v_003.m4s', 300000);
+      File('${d.path}/${stem}_v.m3u8').writeAsStringSync(
+          '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n'
+          '#EXTINF:2.000,\n${stem}_v_000.m4s\n#EXTINF:2.000,\n${stem}_v_001.m4s\n'
+          '#EXTINF:2.000,\n${stem}_v_002.m4s\n#EXTINF:0.300,\n${stem}_v_003.m4s\n'
+          '#EXT-X-ENDLIST\n');
+      void aud(String name, int bytes) {
+        seg('${stem}_${name}_000.m4s', bytes);
+        File('${d.path}/${stem}_$name.m3u8').writeAsStringSync(
+            '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n'
+            '#EXTINF:1.000,\n${stem}_${name}_000.m4s\n#EXT-X-ENDLIST\n');
+      }
+      aud('a0', 80000); // ec-3 -> 640000 bps
+      aud('a1', 16000); // aac -> 128000 bps
+      File('${d.path}/master.m3u8').writeAsStringSync('''
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_0",DEFAULT=YES,LANGUAGE="eng",CHANNELS="6",URI="${stem}_a0.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_1",DEFAULT=NO,LANGUAGE="eng",CHANNELS="2",URI="${stem}_a1.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=9999,AVERAGE-BANDWIDTH=9999,RESOLUTION=1920x1080,CODECS="avc1.640028,ec-3,mp4a.40.2",AUDIO="group_aud"
+${stem}_v.m3u8
+''');
+      await promoteHlsMaster(input: '${tmp.path}/$stem.mkv', outputDir: tmp.path,
+          stemOverride: stem, masterName: stem, audioCodecs: ['ec-3', 'mp4a.40.2']);
+      final out = File('${tmp.path}/$stem.m3u8').readAsStringSync();
+      // aac copy: robust video 2_000_000 + aac 128_000 = 2_128_000 (NOT 8M-ish)
+      expect(RegExp(r'BANDWIDTH=2128000\b.*AUDIO="aud_aac"').hasMatch(out), isTrue);
+      // ec-3 copy: 2_000_000 + 640_000 = 2_640_000
+      expect(RegExp(r'BANDWIDTH=2640000\b.*AUDIO="aud_ec3"').hasMatch(out), isTrue);
+      // the inflated 8 Mbps fragment must not have leaked into any BANDWIDTH
+      expect(RegExp(r'BANDWIDTH=8\d{6}').hasMatch(out), isFalse);
       await tmp.delete(recursive: true);
     });
 

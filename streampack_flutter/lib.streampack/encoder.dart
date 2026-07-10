@@ -790,8 +790,7 @@ Future<({int peak, int avg})?> _mediaBw(String playlistPath) async {
   if (!await f.exists()) return null;
   final dir = f.parent.path;
   final sep = Platform.pathSeparator;
-  var totalBytes = 0, peak = 0;
-  var totalDur = 0.0;
+  final segs = <({int bytes, double dur})>[];
   double? dur;
   for (final line in await f.readAsLines()) {
     final t = line.trim();
@@ -800,16 +799,31 @@ Future<({int peak, int avg})?> _mediaBw(String playlistPath) async {
     } else if (t.isNotEmpty && !t.startsWith('#') && dur != null && dur > 0) {
       final seg = File('$dir$sep${_basename(t)}');
       final sz = await seg.exists() ? await seg.length() : 0;
-      if (sz > 0) {
-        totalBytes += sz;
-        totalDur += dur;
-        final r = (sz * 8 / dur).round();
-        if (r > peak) peak = r;
-      }
+      if (sz > 0) segs.add((bytes: sz, dur: dur));
       dur = null;
     }
   }
-  if (totalDur <= 0) return null;
+  if (segs.isEmpty) return null;
+  final totalBytes = segs.fold<int>(0, (a, s) => a + s.bytes);
+  final totalDur   = segs.fold<double>(0.0, (a, s) => a + s.dur);
+  // Robust peak: ignore segments much shorter than the median duration.
+  // Keyframe/scene-boundary fragments (e.g. a 0.3s segment) spike size/duration
+  // and would otherwise inflate BANDWIDTH far above the sustainable rate - even
+  // inverting the ladder (a 468p rung reading higher than 720p). Fall back to the
+  // overall max only if every segment is "short" (uniformly tiny).
+  final durs   = segs.map((s) => s.dur).toList()..sort();
+  final median = durs[durs.length ~/ 2];
+  int peakOf(bool Function(double) keep) {
+    var p = 0;
+    for (final s in segs) {
+      if (!keep(s.dur)) continue;
+      final r = (s.bytes * 8 / s.dur).round();
+      if (r > p) p = r;
+    }
+    return p;
+  }
+  var peak = peakOf((d) => d >= median * 0.5);
+  if (peak == 0) peak = peakOf((_) => true);
   return (peak: peak, avg: (totalBytes * 8 / totalDur).round());
 }
 
@@ -842,6 +856,7 @@ int? _attrInt(String s, RegExp re) => int.tryParse(re.firstMatch(s)?.group(1) ??
     _regroupAudioByCodec(List<String> header,
         List<({String inf, String uri})> variants, List<String> audioCodecs,
         {List<({int peak, int avg})?> audioBw = const [],
+         Map<String, ({int peak, int avg})> videoBw = const {},
          bool aacDefault = false}) {
   final audioIdx = [
     for (var i = 0; i < header.length; i++)
@@ -923,12 +938,13 @@ int? _attrInt(String s, RegExp re) => int.tryParse(re.firstMatch(s)?.group(1) ??
   final avgRe = RegExp(r'AVERAGE-BANDWIDTH=(\d+)');
   final newVariants = <({String inf, String uri})>[];
   for (final v in variants) {
-    // ffmpeg's BANDWIDTH here is video-only (audio is a separate group). Keep it
-    // and ADD this group's audio bitrate, so the AAC copy and the E-AC-3 copy
-    // carry honestly different numbers. Do NOT recompute video from segments:
-    // sub-second keyframe-boundary segments would inflate a size/duration peak.
-    final vBw  = _attrInt(v.inf, bwRe);
-    final vAvg = _attrInt(v.inf, avgRe);
+    // Video component: the measured robust peak/avg (short keyframe-boundary
+    // segments filtered out) when available, else ffmpeg's declared value.
+    // Each group then ADDS its own audio rate, so the AAC copy and the E-AC-3
+    // copy carry honestly different, resolution-ordered numbers.
+    final mv   = videoBw[_basename(v.uri)];
+    final vBw  = mv?.peak ?? _attrInt(v.inf, bwRe);
+    final vAvg = mv?.avg  ?? _attrInt(v.inf, avgRe);
     for (final g in groups) {
       var inf = _replaceAudioCodecTag(
           v.inf.replaceFirst(RegExp(r'AUDIO="[^"]*"'), 'AUDIO="$g"'),
@@ -1009,12 +1025,13 @@ Future<void> promoteHlsMaster({
   // can't decode; conflating aac/ac-3/ec-3 in one group made every variant
   // advertise ec-3 -> all filtered -> nothing plays. Per-codec groups let the
   // H.264/AAC variants advertise a browser-playable codec. No-op for 0/1 codec.
-  // Measure each audio rendition's real bit rate from its segments so the
-  // per-codec variant copies add an honest, codec-specific amount to ffmpeg's
-  // video-only BANDWIDTH (best-effort; skipped if unreadable, e.g. in unit
-  // tests, leaving the value unchanged). Audio is near-CBR, so short segments
-  // don't distort it - unlike video, which is why we don't recompute video.
+  // Measure each variant's video and each audio rendition's real bit rate from
+  // their segments, so per-codec variant BANDWIDTH is honest: a robust video
+  // peak (short keyframe-boundary segments filtered out, see _mediaBw) plus the
+  // specific audio codec's rate. Best-effort - if segments are unreadable (e.g.
+  // in unit tests) the caller falls back to ffmpeg's declared value.
   final audioBw = <({int peak, int avg})?>[];
+  final videoBw = <String, ({int peak, int avg})>{};
   if (audioCodecs.length >= 2 && audioCodecs.toSet().length >= 2) {
     for (final l in header) {
       if (l.trimLeft().startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) {
@@ -1022,10 +1039,17 @@ Future<void> promoteHlsMaster({
         audioBw.add(u == null ? null : await _mediaBw('$segDir$sep${_basename(u)}'));
       }
     }
+    for (final v in variants) {
+      final b = _basename(v.uri);
+      if (!videoBw.containsKey(b)) {
+        final m = await _mediaBw('$segDir$sep$b');
+        if (m != null) videoBw[b] = m;
+      }
+    }
   }
 
   final rg = _regroupAudioByCodec(header, variants, audioCodecs,
-      audioBw: audioBw, aacDefault: aacDefault);
+      audioBw: audioBw, videoBw: videoBw, aacDefault: aacDefault);
   final outHeader = rg.header;
   final outVariants = rg.variants;
 

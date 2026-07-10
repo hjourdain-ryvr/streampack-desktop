@@ -247,8 +247,11 @@ class _EncoderTabState extends State<EncoderTab> {
         border: Border.all(color: const Color(0xFF2e3848)),
         borderRadius: BorderRadius.circular(6)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600)),
+        // Info can be long (title, layout); wrap to 2 lines + hover tooltip for
+        // the full string.
+        Tooltip(message: label, waitDuration: const Duration(milliseconds: 400),
+            child: Text(label, maxLines: 2, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600))),
         const SizedBox(height: 6),
         Row(children: [
           SizedBox(width: 150, child: DropdownButton<String>(

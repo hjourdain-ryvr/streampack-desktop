@@ -64,11 +64,16 @@ class _JobCardState extends State<JobCard> {
             _IdBadge(job.id),
             const SizedBox(width: 8),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(job.inputBasename,
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
-              Text('→ ${job.hlsOutputDir}',
-                  style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 10, fontFamily: 'monospace'),
-                  overflow: TextOverflow.ellipsis),
+              // Long names wrap to 2 lines; a hover tooltip reveals the whole
+              // thing (these encode Plex/Jellyfin IDs and get long).
+              Tooltip(message: job.inputBasename,
+                  waitDuration: const Duration(milliseconds: 400),
+                  child: Text(job.inputBasename, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12))),
+              Tooltip(message: job.hlsOutputDir,
+                  waitDuration: const Duration(milliseconds: 400),
+                  child: Text('→ ${job.hlsOutputDir}', maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 10, fontFamily: 'monospace'))),
             ])),
           ]),
           const SizedBox(height: 8),
