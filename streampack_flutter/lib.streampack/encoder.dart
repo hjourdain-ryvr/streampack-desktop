@@ -407,9 +407,9 @@ List<String> _audioPlanArgs(List<AudioSelection> kept) {
       final stereo = s.channels == AudioChannelMode.stereo;
       args.addAll([
         '-c:a:$i', s.target.encoder,
-        if (stereo) ...['-ac:$i', '2'],
+        if (stereo) ...['-ac:a:$i', '2'],
         '-b:a:$i', stereo ? '128k' : '384k',
-        '-ar:$i', '44100',
+        '-ar:a:$i', '44100',
       ]);
     }
   }
@@ -498,8 +498,8 @@ List<String> _streamArgs(List<Preset> resolutions, _OutSpec spec,
       ..._videoEncoderArgs(i, r, spec,
           nvenc: nvenc, gpuFrames: false, quality: quality, hdr: hdr, vq: vq),
       '-c:a:$i', 'aac', '-b:a:$i', r.audioBitrate,
-      '-ac:$i', '2',
-      '-ar:$i', '44100',
+      '-ac:a:$i', '2',
+      '-ar:a:$i', '44100',
     ]);
   }
   return args;
@@ -667,7 +667,7 @@ List<String> buildHlsCmd({
       }
       for (var i = 0; i < dl.names.length; i++) {
         audioArgs.addAll(['-c:a:$i', 'aac', '-b:a:$i', '128k',
-                          '-ac:$i', '2', '-ar:$i', '44100']);
+                          '-ac:a:$i', '2', '-ar:a:$i', '44100']);
       }
     } else {
       audioArgs.addAll(_audioPlanArgs(kept));
@@ -1153,7 +1153,7 @@ List<String> buildDashCmd({
       if (!multi) {
         encArgs.addAll([
           '-c:a:$i', 'aac', '-b:a:$i', resolutions[i].audioBitrate,
-          '-ac:$i', '2', '-ar:$i', '44100',
+          '-ac:a:$i', '2', '-ar:a:$i', '44100',
         ]);
       }
     }
@@ -1197,8 +1197,8 @@ List<String> buildDashCmd({
       ...maps,
       ...videoArgs,
       if (!multi) ...[
-        '-c:a:$n', 'aac', '-b:a:$n', resolutions.first.audioBitrate,
-        '-ac:$n', '2', '-ar:$n', '44100',
+        '-c:a:0', 'aac', '-b:a:0', resolutions.first.audioBitrate,
+        '-ac:a:0', '2', '-ar:a:0', '44100',
       ],
       if (multi) ..._audioPlanArgs(kept),
       ...dashTail,

@@ -54,6 +54,25 @@ void main() {
       expect(vsm.contains('a:1,agroup:aud,language:fra,default:yes'), isTrue);
       expect('default:yes'.allMatches(vsm).length, 1);
     });
+
+    test('stereo downmix targets the audio stream (a: specifier, not bare index)', () {
+      // Bug (<=3.2.1): -ac used a bare index, which points at a VIDEO output
+      // stream (video is emitted first), so a 5.1 source stayed 5.1 in the AAC.
+      final plan = [
+        AudioSelection(sourceOrder: 0, target: AudioTarget.aac,
+            channels: AudioChannelMode.stereo, language: 'eng', isDefault: true),
+      ];
+      final cmd = buildHlsCmd(
+        input: '/in.mkv', outputDir: '/out',
+        resolutions: [kPresets[1], kPresets[2]], // video streams come first
+        segmentDuration: 6, nvenc: false, quality: EncodeQuality.balanced,
+        output: VideoOutput.h265Sdr, inputColor: InputColor.sdr8,
+        audioPlan: plan,
+      );
+      expect(cmd.contains('-ac:a:0'), isTrue);        // audio-type index
+      expect(cmd.contains('-ac:0'), isFalse);         // never the bare index
+      expect(cmd[cmd.indexOf('-ac:a:0') + 1], '2');   // downmix to 2 channels
+    });
   });
 
   group('HEVC hvc1 tagging', () {
