@@ -641,6 +641,12 @@ List<String> buildHlsCmd({
       : <String>[
           '-hls_segment_type', 'mpegts',
           '-hls_segment_filename', '$segDir/${stem}_%v_%03d.ts',
+          // MPEG-TS defaults muxpreload to 0.5s and muxdelay to 0.7s, which
+          // stamp the initial PCR ahead of the first DTS (PCR preroll) and let
+          // the muxer aggregate AAC PES packets. Both are considered TS-packaging
+          // anomalies by some packagers/players. zero them so segments start clean.
+          // Only meaningful for TS (H.264 SDR), since fMP4/HEVC segments carry no PCR.
+          '-muxdelay', '0', '-muxpreload', '0',
         ];
 
   final common = <String>[

@@ -93,6 +93,24 @@ void main() {
       ).join(' ');
       expect(cmd.contains('hvc1'), isFalse);
     });
+
+    test('MPEG-TS (H.264) zeroes muxdelay/muxpreload; fMP4 (H.265) does not', () {
+      final ts = buildHlsCmd(
+        input: '/in.mkv', outputDir: '/out', resolutions: [kPresets[2]],
+        segmentDuration: 6, nvenc: false, quality: EncodeQuality.balanced,
+        output: VideoOutput.h264Sdr, inputColor: InputColor.sdr8,
+      ).join(' ');
+      expect(ts.contains('-hls_segment_type mpegts'), isTrue);
+      expect(ts.contains('-muxdelay 0 -muxpreload 0'), isTrue);
+
+      final fmp4 = buildHlsCmd(
+        input: '/in.mkv', outputDir: '/out', resolutions: [kPresets[2]],
+        segmentDuration: 6, nvenc: false, quality: EncodeQuality.balanced,
+        output: VideoOutput.h265Sdr, inputColor: InputColor.sdr8,
+      ).join(' ');
+      expect(fmp4.contains('-hls_segment_type fmp4'), isTrue);
+      expect(fmp4.contains('-muxdelay'), isFalse);
+    });
   });
 
   test('promoteHlsMaster: friendly de-duped NAMEs, single default, CODECS kept', () async {
