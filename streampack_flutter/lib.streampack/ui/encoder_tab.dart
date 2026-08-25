@@ -563,12 +563,16 @@ class _EncoderTabState extends State<EncoderTab> {
       final r = await Process.run(ffprobePath(), [
         '-v','error','-select_streams','v:0',
         '-show_entries','stream=width,height','-of','csv=s=x:p=0', path]);
-      if (r.exitCode == 0) {
-        final parts = (r.stdout as String).trim().split('x');
-        if (parts.length == 2) {
-          final w = int.tryParse(parts[0]) ?? 0, h = int.tryParse(parts[1]) ?? 0;
-          if (w > 0 && h > 0) return (w: w, h: h);
-        }
+      // ffprobe emits e.g. "720x576x" (a trailing separator), so split('x')
+      // yields 3 parts and an exact length==2 check would reject a good result.
+      // Pull the first two integers out of stdout instead (also tolerant of a
+      // trailing CR/LF).
+      final nums = RegExp(r'\d+')
+          .allMatches(r.stdout as String)
+          .map((m) => int.parse(m.group(0)!))
+          .toList();
+      if (nums.length >= 2 && nums[0] > 0 && nums[1] > 0) {
+        return (w: nums[0], h: nums[1]);
       }
     } catch (e) { debugPrint('[probe] $e'); }
     return null;

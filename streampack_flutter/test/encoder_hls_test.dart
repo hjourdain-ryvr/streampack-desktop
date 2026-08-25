@@ -159,7 +159,7 @@ p_720p.m3u8
   });
 
   group('Advanced video quality', () {
-    final res = [kPresets[0], kPresets[1], kPresets[2], kPresets[3]]; // 2160..480
+    final res = [kPresets[0], kPresets[1], kPresets[2], kPresets[4]]; // 2160,1080,720,480
     List<String> hls({VideoQuality? vq, VideoOutput out = VideoOutput.h265Sdr,
         InputColor ic = InputColor.sdr10, bool nvenc = false, HdrMetadata? hdr}) =>
       buildHlsCmd(input: '/i.mkv', outputDir: '/o', resolutions: res,

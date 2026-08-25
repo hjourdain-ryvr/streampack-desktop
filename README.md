@@ -13,7 +13,7 @@ by CMake during `flutter build`.
 - **Format selector** — HLS, DASH, or Both in a single pass
 - **Video output** — H.264 (SDR), H.265 (SDR), H.265 (HDR), or, for HDR sources, a dual **HDR+SDR ladder** (`H.265 (HDR+SDR)` or `H.265 (HDR) + H.264 (SDR)`) that emits a tone-mapped SDR rendition alongside the HDR one in a single pass (HLS); output is gated by the source
 - **Quality toggle** — Balanced (`p4`/`medium`) or Best (`p6`/`slow`)
-- **Rendition picker** — 240p through 4K, upscale prevention built in
+- **Rendition picker** — 240p through 4K, including both `576p (EU SD)` and `480p (US SD)`; downscale-only (upscale prevention built in)
 - **Advanced tab (single file)** — per-track audio (transcode to AAC / AC-3 / E-AC-3, passthrough, remove, channel layout, language, default), and per-job video quality (target bitrate or CRF, plus encoder effort)
 - **Multi-audio output** — HLS **per-codec** alternate-audio rendition groups (one group per codec, so browsers / hls.js get a playable AAC track while native players keep E-AC-3 / AC-3), plus DASH per-track AdaptationSets; friendly, codec-labelled track names (e.g. "English 5.1 (E-AC-3)") and honest per-variant `BANDWIDTH`
 - **Multiple file input** — select multiple files at once; each becomes a separate job sharing the same settings; renditions constrained to the smallest source
@@ -178,10 +178,10 @@ build\windows\x64\runner\Release\ffprobe.exe
 An [Inno Setup](https://jrsoftware.org/isinfo.php) script is included:
 
 ```bat
-iscc streampack-3.2.3.iss
+iscc streampack-3.2.4.iss
 ```
 
-Output: `installer\StreamPack-3.2.3-Setup.exe`
+Output: `installer\StreamPack-3.2.4-Setup.exe`
 
 ---
 
@@ -193,7 +193,7 @@ streampack-desktop/
 ├── build-ffmpeg.sh              ← convenience script wrapping Docker
 ├── setup.sh                     ← Linux: copies lib.streampack/→lib/ and patches CMakeLists.txt
 ├── setup.ps1                    ← Windows: same as setup.sh but PowerShell
-├── streampack-3.2.3.iss         ← Inno Setup installer script
+├── streampack-3.2.4.iss         ← Inno Setup installer script
 ├── README.md                    ← this file
 ├── vendor/                      ← built ffmpeg binaries (git-ignored)
 │   ├── linux/
@@ -271,10 +271,10 @@ appimagetool StreamPack.AppDir StreamPack-x86_64.AppImage
 ### Windows — installer
 
 ```bat
-iscc streampack-3.2.3.iss
+iscc streampack-3.2.4.iss
 ```
 
-Produces a per-user installer (`installer\StreamPack-3.2.3-Setup.exe`) that
+Produces a per-user installer (`installer\StreamPack-3.2.4-Setup.exe`) that
 bundles the executable, all Flutter DLLs, ffmpeg, ffprobe, and assets.
 
 ### Windows — zip

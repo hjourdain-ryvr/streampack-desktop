@@ -25,7 +25,8 @@ const kPresets = <Preset>[
   Preset(label: '2160p (4K)',    width: 3840, height: 2160, videoBitrate: '15000k', audioBitrate: '192k', bandwidth: 15360000),
   Preset(label: '1080p (Full HD)',width: 1920, height: 1080, videoBitrate:  '5000k', audioBitrate: '192k', bandwidth:  5376000),
   Preset(label: '720p (HD)',     width: 1280, height:  720, videoBitrate:  '2800k', audioBitrate: '128k', bandwidth:  2969600),
-  Preset(label: '480p (SD)',     width:  832, height:  468, videoBitrate:  '1400k', audioBitrate: '128k', bandwidth:  1548800),
+  Preset(label: '576p (EU SD)',  width: 1024, height:  576, videoBitrate:  '1900k', audioBitrate: '128k', bandwidth:  2076672),
+  Preset(label: '480p (US SD)',  width:  832, height:  468, videoBitrate:  '1400k', audioBitrate: '128k', bandwidth:  1548800),
   Preset(label: '360p (Low)',    width:  640, height:  360, videoBitrate:   '800k', audioBitrate:  '96k', bandwidth:   917504),
   Preset(label: '240p (Mobile)', width:  416, height:  234, videoBitrate:   '400k', audioBitrate:  '64k', bandwidth:   475136),
 ];
