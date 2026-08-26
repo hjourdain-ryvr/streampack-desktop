@@ -73,6 +73,7 @@ class AppLocalizations {
   String get encSubtitlesTab      => const {'de':'Untertitel','sv':'Undertexter','fr':'Sous-titres'}[lang.code] ?? 'Subtitles';
   String get encPassthrough       => const {'de':'Durchreichen','sv':'Vidarekoppla','fr':'Conserver'}[lang.code] ?? 'Passthrough';
   String get encRemove            => const {'de':'Entfernen','sv':'Ta bort','fr':'Supprimer'}[lang.code] ?? 'Remove';
+  String get encAddOutput         => const {'de':'Ausgabe hinzufügen','sv':'Lägg till utdata','fr':'Ajouter une sortie'}[lang.code] ?? 'Add output';
   String get encDefault           => const {'de':'STANDARD','sv':'STANDARD','fr':'DÉFAUT'}[lang.code] ?? 'DEFAULT';
   String get encStereo            => const {'de':'Stereo','sv':'Stereo','fr':'Stéréo'}[lang.code] ?? 'Stereo';
   String get encNoAudio           => const {'de':'Keine Audiospuren','sv':'Inga ljudspår','fr':'Aucune piste audio'}[lang.code] ?? 'No audio tracks';

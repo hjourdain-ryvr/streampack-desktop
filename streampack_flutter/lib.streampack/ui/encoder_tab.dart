@@ -190,8 +190,7 @@ class _EncoderTabState extends State<EncoderTab> {
           style: const TextStyle(color: Color(0xFF9aa3b8), fontSize: 11))];
     }
     return [
-      for (var i = 0; i < s.audio.length && i < _audioPlan.length; i++)
-        _audioRow(s.audio[i], i, l),
+      for (final t in s.audio) _audioTrackGroup(t, l),
     ];
   }
 
@@ -204,34 +203,12 @@ class _EncoderTabState extends State<EncoderTab> {
     return '${t.channels}ch';
   }
 
-  Widget _audioRow(AudioTrack t, int i, AppLocalizations l) {
-    final sel = _audioPlan[i];
-    final modes = <String, String>{
-      'aac': 'AAC', 'ac3': 'AC-3', 'eac3': 'E-AC-3',
-      if (t.canPassthrough) 'copy': l.encPassthrough,
-      'remove': l.encRemove,
-    };
-    final cur = sel.action == AudioAction.remove
-        ? 'remove'
-        : sel.action == AudioAction.passthrough
-            ? 'copy'
-            : sel.target.name; // aac | ac3 | eac3
-    void setMode(String? m) {
-      if (m == null) return;
-      setState(() {
-        if (m == 'remove') { sel.action = AudioAction.remove; sel.isDefault = false; }
-        else if (m == 'copy') { sel.action = AudioAction.passthrough; }
-        else {
-          sel.action = AudioAction.transcode;
-          sel.target = AudioTarget.values.firstWhere((e) => e.name == m);
-        }
-        // Keep exactly one default among the kept tracks (e.g. if the current
-        // default was just removed).
-        final kept = _audioPlan.where((a) => a.action != AudioAction.remove);
-        if (kept.isNotEmpty && !kept.any((a) => a.isDefault)) kept.first.isDefault = true;
-      });
-    }
-    final kept  = sel.action != AudioAction.remove;
+  // One source audio track = one group. It can drive several output renditions
+  // (e.g. E-AC-3 passthrough AND an AAC stereo copy of the SAME source), each an
+  // AudioSelection in _audioPlan carrying this track's sourceOrder. A track with
+  // no output rows is simply not encoded.
+  Widget _audioTrackGroup(AudioTrack t, AppLocalizations l) {
+    final outputs = _audioPlan.where((sel) => sel.sourceOrder == t.order).toList();
     final label = [
       if (t.language != null) t.language!.toUpperCase(),
       t.codecLabel,                              // e.g. "DTS-HD MA" vs "DTS"
@@ -240,7 +217,7 @@ class _EncoderTabState extends State<EncoderTab> {
     ].join('  |  ');
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 6),
+      margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFF20252f),
@@ -252,7 +229,46 @@ class _EncoderTabState extends State<EncoderTab> {
         Tooltip(message: label, waitDuration: const Duration(milliseconds: 400),
             child: Text(label, maxLines: 2, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Color(0xFFb8bfcf), fontSize: 11, fontWeight: FontWeight.w600))),
-        const SizedBox(height: 6),
+        for (final sel in outputs) _audioOutputRow(t, sel, l),
+        const SizedBox(height: 4),
+        InkWell(
+          onTap: () => _addOutput(t),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.add, size: 14, color: Color(0xFF00d4aa)),
+              const SizedBox(width: 4),
+              Text(l.encAddOutput, style: const TextStyle(
+                  color: Color(0xFF00d4aa), fontSize: 11, fontWeight: FontWeight.w600)),
+            ]),
+          )),
+      ]),
+    );
+  }
+
+  // One output rendition of a source track: codec choice (transcode target or
+  // passthrough), default flag, optional stereo/keep downmix, and a delete [x].
+  Widget _audioOutputRow(AudioTrack t, AudioSelection sel, AppLocalizations l) {
+    final modes = <String, String>{
+      'aac': 'AAC', 'ac3': 'AC-3', 'eac3': 'E-AC-3',
+      if (t.canPassthrough) 'copy': l.encPassthrough,
+    };
+    final cur = sel.action == AudioAction.passthrough ? 'copy' : sel.target.name;
+    void setMode(String? m) {
+      if (m == null) return;
+      setState(() {
+        if (m == 'copy') { sel.action = AudioAction.passthrough; }
+        else {
+          sel.action = AudioAction.transcode;
+          sel.target = AudioTarget.values.firstWhere((e) => e.name == m);
+        }
+      });
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           SizedBox(width: 150, child: DropdownButton<String>(
             value: cur, isDense: true, isExpanded: true,
@@ -264,7 +280,7 @@ class _EncoderTabState extends State<EncoderTab> {
             onChanged: setMode,
           )),
           const SizedBox(width: 8),
-          if (kept) GestureDetector(
+          GestureDetector(
             onTap: () => setState(() {
               for (final a in _audioPlan) { a.isDefault = false; }
               sel.isDefault = true;
@@ -279,6 +295,15 @@ class _EncoderTabState extends State<EncoderTab> {
                   color: sel.isDefault ? const Color(0xFF0a0c0f) : const Color(0xFF9aa3b8),
                   fontSize: 10, fontWeight: FontWeight.w700)),
             )),
+          const Spacer(),
+          IconButton(
+            onPressed: () => _removeOutput(sel),
+            icon: const Icon(Icons.close, size: 15, color: Color(0xFF9aa3b8)),
+            tooltip: l.encRemove,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            splashRadius: 14,
+          ),
         ]),
         // Channel choice only matters for multichannel sources: downmix to
         // stereo, or keep the original layout (e.g. 5.1).
@@ -293,6 +318,39 @@ class _EncoderTabState extends State<EncoderTab> {
         ],
       ]),
     );
+  }
+
+  // Add another output rendition for [t], inserted right after that track's
+  // existing outputs so _audioPlan order matches the on-screen grouping (and
+  // thus the emitted audio stream order). New outputs are never the default.
+  void _addOutput(AudioTrack t) {
+    setState(() {
+      final sel = AudioSelection.defaultFor(t)..isDefault = false;
+      var insertAt = _audioPlan.length;
+      for (var i = 0; i < _audioPlan.length; i++) {
+        if (_audioPlan[i].sourceOrder == t.order) insertAt = i + 1;
+      }
+      _audioPlan.insert(insertAt, sel);
+      _ensureOneDefault();
+    });
+  }
+
+  void _removeOutput(AudioSelection sel) {
+    setState(() {
+      _audioPlan.remove(sel);
+      _ensureOneDefault();
+    });
+  }
+
+  // Keep exactly one default across all output renditions.
+  void _ensureOneDefault() {
+    if (_audioPlan.isEmpty) return;
+    final defs = _audioPlan.where((a) => a.isDefault).toList();
+    if (defs.isEmpty) {
+      _audioPlan.first.isDefault = true;
+    } else {
+      for (var i = 1; i < defs.length; i++) { defs[i].isDefault = false; }
+    }
   }
 
   // Resolutions that will actually be encoded (selected, minus upscales),

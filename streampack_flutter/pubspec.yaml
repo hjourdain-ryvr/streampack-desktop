@@ -1,7 +1,7 @@
 name: streampack
 description: HLS + DASH encoder and validator desktop app
 publish_to: none
-version: 3.2.4+12
+version: 3.3.0+13
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
