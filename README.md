@@ -1,7 +1,7 @@
 # StreamPack Desktop
 
 A native Flutter desktop application for encoding video to HLS/DASH and
-validating manifests. Calls `ffmpeg`/`ffprobe` directly — no browser, no
+validating manifests. Calls `ffmpeg`/`ffprobe` directly - no browser, no
 server, no Python required.
 
 ffmpeg is built from source via Docker and bundled into the app automatically
@@ -9,23 +9,23 @@ by CMake during `flutter build`.
 
 ## Features
 
-- **HLS and DASH encoding** — produce adaptive streaming content ready to serve
-- **Format selector** — HLS, DASH, or Both in a single pass
-- **Video output** — H.264 (SDR), H.265 (SDR), H.265 (HDR), or, for HDR sources, a dual **HDR+SDR ladder** (`H.265 (HDR+SDR)` or `H.265 (HDR) + H.264 (SDR)`) that emits a tone-mapped SDR rendition alongside the HDR one in a single pass (HLS); output is gated by the source
-- **Quality toggle** — Balanced (`p4`/`medium`) or Best (`p6`/`slow`)
-- **Rendition picker** — 240p through 4K, including both `576p (EU SD)` and `480p (US SD)`; downscale-only (upscale prevention built in)
-- **Advanced tab (single file)** — per-track audio, each source track driving one or more output renditions (transcode to AAC / AC-3 / E-AC-3 or passthrough, per-rendition channel layout and default; e.g. E-AC-3 passthrough plus an AAC stereo copy of the same track), and per-job video quality (target bitrate or CRF, plus encoder effort)
-- **Multi-audio output** — HLS **per-codec** alternate-audio rendition groups (one group per codec, so browsers / hls.js get a playable AAC track while native players keep E-AC-3 / AC-3), plus DASH per-track AdaptationSets; friendly, codec-labelled track names (e.g. "English 5.1 (E-AC-3)") and honest per-variant `BANDWIDTH`
-- **Multiple file input** — select multiple files at once; each becomes a separate job sharing the same settings; renditions constrained to the smallest source
-- **Job queue** — run and monitor multiple encode jobs with progress, elapsed time, ETA, per-job cancel and cancel all
-- **Manifest validator** — validate local `.m3u8` or `.mpd` files, or remote URLs; understands alternate audio rendition groups (verifies audio via renditions, not just muxed streams)
-- **Localization** — English, Deutsch, Svenska, Français (runtime switching, no restart)
+- **HLS and DASH encoding** - produce adaptive streaming content ready to serve
+- **Format selector** - HLS, DASH, or Both in a single pass
+- **Video output** - H.264 (SDR), H.265 (SDR), H.265 (HDR), or, for HDR sources, a dual **HDR+SDR ladder** (`H.265 (HDR+SDR)` or `H.265 (HDR) + H.264 (SDR)`) that emits a tone-mapped SDR rendition alongside the HDR one in a single pass (HLS); output is gated by the source
+- **Quality toggle** - Balanced (`p4`/`medium`) or Best (`p6`/`slow`)
+- **Rendition picker** - 240p through 4K, including both `576p (EU SD)` and `480p (US SD)`; downscale-only (upscale prevention built in)
+- **Advanced tab (single file)** - per-track audio, each source track driving one or more output renditions (transcode to AAC / AC-3 / E-AC-3 or passthrough, per-rendition channel layout and default; e.g. E-AC-3 passthrough plus an AAC stereo copy of the same track), and per-job video quality (target bitrate or CRF, plus encoder effort)
+- **Multi-audio output** - HLS **per-codec** alternate-audio rendition groups (one group per codec, so browsers / hls.js get a playable AAC track while native players keep E-AC-3 / AC-3), plus DASH per-track AdaptationSets; friendly, codec-labelled track names (e.g. "English 5.1 (E-AC-3)") and honest per-variant `BANDWIDTH`
+- **Multiple file input** - select multiple files at once; each becomes a separate job sharing the same settings; renditions constrained to the smallest source
+- **Job queue** - run and monitor multiple encode jobs with progress, elapsed time, ETA, per-job cancel and cancel all
+- **Manifest validator** - validate local `.m3u8` or `.mpd` files, or remote URLs; understands alternate audio rendition groups (verifies audio via renditions, not just muxed streams)
+- **Localization** - English, Deutsch, Svenska, Français (runtime switching, no restart)
 
 ### NVIDIA GPU acceleration
 
 When an NVIDIA GPU is detected at runtime, StreamPack automatically uses
 `h264_nvenc` / `hevc_nvenc` for encoding. Falls back to `libx264` / `libx265`
-CPU encoding when no GPU is present — no configuration needed. (4K HDR HEVC is
+CPU encoding when no GPU is present - no configuration needed. (4K HDR HEVC is
 NVENC-bound: throughput is limited by the GPU's video-encode engine.)
 
 | Format | CPU path | GPU path |
@@ -46,16 +46,16 @@ Step 2: Build the Flutter app (flutter build, on target platform)
 
 ---
 
-## Step 1 — Build ffmpeg binaries
+## Step 1 - Build ffmpeg binaries
 
 Run once (or when updating ffmpeg version). Requires Docker.
 
 The bundled ffmpeg includes:
-- `libx264` — CPU H.264 encoding
-- `h264_nvenc` / `hevc_nvenc` — NVIDIA GPU encoding (NVENC)
-- `scale_cuda` — NVIDIA GPU scaling (requires `--enable-cuda-llvm`, uses `clang`)
-- `scale`, `setsar`, `setdar`, `split`, `pad` — CPU filters
-- `zscale` / `tonemap` (libzimg) + `tonemap_cuda` — HDR→SDR tone-mapping for the
+- `libx264` - CPU H.264 encoding
+- `h264_nvenc` / `hevc_nvenc` - NVIDIA GPU encoding (NVENC)
+- `scale_cuda` - NVIDIA GPU scaling (requires `--enable-cuda-llvm`, uses `clang`)
+- `scale`, `setsar`, `setdar`, `split`, `pad` - CPU filters
+- `zscale` / `tonemap` (libzimg) + `tonemap_cuda` - HDR->SDR tone-mapping for the
   dual HDR+SDR ladder (CPU route via libzimg; GPU `tonemap_cuda` via the Jellyfin
   patch chain in `ffmpeg-patches/`)
 - HLS and DASH muxers, common demuxers and decoders
@@ -86,16 +86,16 @@ vendor/
 ```
 
 Build times (first run, no Docker cache):
-- Linux binary: ~15–25 minutes
-- Windows binary: ~25–40 minutes
+- Linux binary: ~15-25 minutes
+- Windows binary: ~25-40 minutes
 
-Subsequent runs use Docker layer cache and take ~2–3 minutes.
+Subsequent runs use Docker layer cache and take ~2-3 minutes.
 
 ---
 
-## Step 2 — Initialise Flutter platform scaffolding (once)
+## Step 2 - Initialise Flutter platform scaffolding (once)
 
-Flutter generates the platform directories itself — they must not be written
+Flutter generates the platform directories itself - they must not be written
 by hand. It also regenerates `lib/main.dart` with a placeholder, which is why
 StreamPack's source lives in `lib.streampack/` instead of `lib/` directly.
 
@@ -109,7 +109,7 @@ cd ..
 bash setup.sh
 ```
 
-`setup.sh` only requires the `linux/` platform directory — `windows/` is
+`setup.sh` only requires the `linux/` platform directory - `windows/` is
 optional. If `windows/` is also present, `setup.sh` patches it too.
 
 ### Windows
@@ -128,7 +128,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
 The setup scripts do two things:
-1. Copy `lib.streampack/` → `lib/`, overwriting Flutter's generated placeholder
+1. Copy `lib.streampack/` -> `lib/`, overwriting Flutter's generated placeholder
 2. Patch `linux/CMakeLists.txt` or `windows/CMakeLists.txt` to bundle ffmpeg
 
 **Important:** if you ever re-run `flutter create`, re-run the setup script
@@ -136,7 +136,7 @@ afterwards to restore `lib/` from `lib.streampack/`.
 
 ---
 
-## Step 3 — Build the Flutter app
+## Step 3 - Build the Flutter app
 
 ### Linux
 
@@ -173,15 +173,15 @@ build\windows\x64\runner\Release\ffmpeg.exe
 build\windows\x64\runner\Release\ffprobe.exe
 ```
 
-### Windows — installer
+### Windows - installer
 
 An [Inno Setup](https://jrsoftware.org/isinfo.php) script is included:
 
 ```bat
-iscc streampack-3.3.0.iss
+iscc streampack-3.3.1.iss
 ```
 
-Output: `installer\StreamPack-3.3.0-Setup.exe`
+Output: `installer\StreamPack-3.3.1-Setup.exe`
 
 ---
 
@@ -193,7 +193,7 @@ streampack-desktop/
 ├── build-ffmpeg.sh              ← convenience script wrapping Docker
 ├── setup.sh                     ← Linux: copies lib.streampack/→lib/ and patches CMakeLists.txt
 ├── setup.ps1                    ← Windows: same as setup.sh but PowerShell
-├── streampack-3.3.0.iss         ← Inno Setup installer script
+├── streampack-3.3.1.iss         ← Inno Setup installer script
 ├── README.md                    ← this file
 ├── vendor/                      ← built ffmpeg binaries (git-ignored)
 │   ├── linux/
@@ -248,17 +248,17 @@ In release builds, the bundled binary next to the executable is used.
 
 ## Distribute
 
-### Linux — tar.gz
+### Linux - tar.gz
 
 ```bash
 tar -czf streampack-linux.tar.gz \
     -C build/linux/x64/release bundle
 ```
 
-The `bundle/` directory is self-contained — copy it anywhere and run
+The `bundle/` directory is self-contained - copy it anywhere and run
 `./bundle/streampack`.
 
-### Linux — AppImage
+### Linux - AppImage
 
 ```bash
 # Install appimagetool: https://appimage.github.io/appimagetool/
@@ -268,16 +268,16 @@ cp -r build/linux/x64/release/bundle StreamPack.AppDir
 appimagetool StreamPack.AppDir StreamPack-x86_64.AppImage
 ```
 
-### Windows — installer
+### Windows - installer
 
 ```bat
-iscc streampack-3.3.0.iss
+iscc streampack-3.3.1.iss
 ```
 
-Produces a per-user installer (`installer\StreamPack-3.3.0-Setup.exe`) that
+Produces a per-user installer (`installer\StreamPack-3.3.1-Setup.exe`) that
 bundles the executable, all Flutter DLLs, ffmpeg, ffprobe, and assets.
 
-### Windows — zip
+### Windows - zip
 
 ```powershell
 Compress-Archive `
@@ -308,30 +308,30 @@ flutter run -d windows
 ## Troubleshooting
 
 **`ffmpeg not found` on startup**
-→ Either install ffmpeg system-wide, or run `build-ffmpeg.sh` and rebuild
+-> Either install ffmpeg system-wide, or run `build-ffmpeg.sh` and rebuild
   the Flutter app so CMake bundles the binaries.
 
 **NVENC not detected (CPU dot lit instead of GPU dot)**
-→ The bundled ffmpeg tests NVENC at startup using a `nullsrc=s=256x256` test
+-> The bundled ffmpeg tests NVENC at startup using a `nullsrc=s=256x256` test
   encode. Ensure NVIDIA drivers are installed and up to date. On Linux,
   verify `nvidia-smi` works. The test requires the `lavfi` input device and
   `wrapped_avframe` decoder, both included in the bundled build.
 
 **`scale_cuda` not available**
-→ The bundled ffmpeg requires `--enable-cuda-llvm` and `clang` in the build
+-> The bundled ffmpeg requires `--enable-cuda-llvm` and `clang` in the build
   environment. Rebuild with `bash build-ffmpeg.sh` from the latest Dockerfile
   which includes these. `scale_cuda` only appears in `-filters` output when
   an NVIDIA GPU is present at runtime.
 
 **Docker build fails on x264**
-→ Check network access from the container (needed to clone from videolan.org).
+-> Check network access from the container (needed to clone from videolan.org).
   Set `--build-arg X264_VERSION=stable` explicitly if the default tag changed.
 
 **Windows .exe won't run**
-→ Verify the cross-compiled binary: `file vendor/windows/ffmpeg.exe` should
+-> Verify the cross-compiled binary: `file vendor/windows/ffmpeg.exe` should
   show `PE32+ executable (console) x86-64, for MS Windows`.
   The binary is statically linked and requires no DLLs.
 
 **CMake warning: ffmpeg binaries not found**
-→ Run `build-ffmpeg.sh` first, then rebuild. The app will still build and
+-> Run `build-ffmpeg.sh` first, then rebuild. The app will still build and
   run but will require system ffmpeg on the target machine.

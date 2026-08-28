@@ -4,14 +4,62 @@ import 'dart:convert';
 import 'package:xml/xml.dart';
 import 'models.dart';
 import 'ffmpeg.dart';
-// ── Stem sanitisation ─────────────────────────────────────────────────────────
+// Accent folding
+
+/// Accented Latin letter (by code point) -> ASCII base, "simple fold": the
+/// diacritic is dropped to the base letter (e-acute -> e, u-umlaut -> u,
+/// a-ring -> a). The few characters with no single base expand (sharp-s -> ss,
+/// ligatures ae/oe, thorn -> th). Covers the languages supported (FR/DE/SV) plus
+/// the rest of Latin-1.
+const Map<int, String> _accentFold = {
+  0x00C0:'A',0x00C1:'A',0x00C2:'A',0x00C3:'A',0x00C4:'A',0x00C5:'A',0x00C6:'AE',
+  0x00C7:'C',
+  0x00C8:'E',0x00C9:'E',0x00CA:'E',0x00CB:'E',
+  0x00CC:'I',0x00CD:'I',0x00CE:'I',0x00CF:'I',
+  0x00D0:'D',0x00D1:'N',
+  0x00D2:'O',0x00D3:'O',0x00D4:'O',0x00D5:'O',0x00D6:'O',0x00D8:'O',
+  0x00D9:'U',0x00DA:'U',0x00DB:'U',0x00DC:'U',
+  0x00DD:'Y',0x00DE:'TH',0x00DF:'ss',
+  0x00E0:'a',0x00E1:'a',0x00E2:'a',0x00E3:'a',0x00E4:'a',0x00E5:'a',0x00E6:'ae',
+  0x00E7:'c',
+  0x00E8:'e',0x00E9:'e',0x00EA:'e',0x00EB:'e',
+  0x00EC:'i',0x00ED:'i',0x00EE:'i',0x00EF:'i',
+  0x00F0:'d',0x00F1:'n',
+  0x00F2:'o',0x00F3:'o',0x00F4:'o',0x00F5:'o',0x00F6:'o',0x00F8:'o',
+  0x00F9:'u',0x00FA:'u',0x00FB:'u',0x00FC:'u',
+  0x00FD:'y',0x00FF:'y',0x00FE:'th',
+  0x0152:'OE',0x0153:'oe', // OE / oe ligature
+  0x0178:'Y',              // Y with diaeresis
+  0x1E9E:'SS',             // capital sharp s
+};
+
+/// Transliterate accented Latin letters to ASCII so titles keep their letters in
+/// output filenames and manifest URIs (e-acute -> e) instead of dropping them.
+/// Precomposed characters go through [_accentFold]. Combining marks (NFD input)
+/// are removed, leaving the base letter.
+String foldAccents(String s) {
+  final b = StringBuffer();
+  for (final r in s.runes) {
+    final m = _accentFold[r];
+    if (m != null) {
+      b.write(m);
+    } else if (r >= 0x0300 && r <= 0x036F) {
+      // combining diacritical mark -> drop (base letter already written)
+    } else {
+      b.writeCharCode(r);
+    }
+  }
+  return b.toString();
+}
+
+// Stem sanitisation
 
 /// Return a safe filename stem from an input path.
 /// Rules applied in order:
-///   1. Spaces → underscores
+///   1. Spaces -> underscores
 ///   2. Strip unsafe URI characters (keep word chars and hyphens)
-///   3. Collapse multiple underscores → single underscore
-///   4. Clean up _-_, _-, -_ patterns → single hyphen
+///   3. Collapse multiple underscores -> single underscore
+///   4. Clean up _-_, _-, -_ patterns -> single hyphen
 ///   5. Collapse underscores again (in case step 4 produced new sequences)
 ///   6. Strip leading/trailing underscores and hyphens
 String sanitiseStem(String inputPath) {
@@ -22,11 +70,13 @@ String sanitiseStem(String inputPath) {
   return stemFromName(stem);
 }
 
-/// Sanitise a plain name (no path/extension handling) into a filesystem- and
-/// URI-safe stem: spaces -> underscore, keep word chars + hyphen, collapse.
+/// Sanitise a plain name (no path/extension handling) into a filesystem - and
+/// URI - safe stem: spaces -> underscore, keep word chars + hyphen, collapse.
 /// Used for the segment directory, segment filenames and manifest URIs.
 String stemFromName(String name) {
-  var stem = name.replaceAll(RegExp(r'\s+'), '_');
+  // Fold accents first, so accented letters become ASCII (e-acute -> e) instead
+  // of being deleted by the word-char strip below.
+  var stem = foldAccents(name).replaceAll(RegExp(r'\s+'), '_');
   stem = stem.replaceAll(RegExp(r'[^\w\-]'), '');
   stem = stem.replaceAll(RegExp(r'_+'), '_');
   stem = stem.replaceAll(RegExp(r'_-_'), '-');
@@ -50,11 +100,13 @@ String defaultOutputName(String inputPath) {
 /// and hyphens (Plex/Jellyfin need e.g. "[tmdbid-348]"), strip only characters
 /// illegal in a filename. Falls back to a sanitised stem if empty.
 String safeFileName(String name) {
-  final s = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+  // Fold accents to ASCII (keeping spaces/brackets) so the master manifest name
+  // matches the ASCII segment stem and needs no URL-encoding when served.
+  final s = foldAccents(name).replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
   return s.isEmpty ? stemFromName(name) : s;
 }
 
-// ── NVIDIA NVENC detection ────────────────────────────────────────────────────
+// NVIDIA NVENC detection
 
 /// Cached result of NVENC availability check.
 /// null = not yet checked, true = available, false = not available.
@@ -63,8 +115,8 @@ bool? _nvencAvailable;
 /// Check whether h264_nvenc is available at runtime.
 /// Uses a 1-frame encode from the color filter source.
 /// nullsrc produces wrapped_avframe which requires a decoder not in our
-/// minimal build — color filter outputs raw frames directly.
-/// Result is cached — only probed once per session.
+/// minimal build - color filter outputs raw frames directly.
+/// Result is cached - only probed once per session.
 Future<bool> nvencAvailable() async {
   if (_nvencAvailable != null) return _nvencAvailable!;
   try {
@@ -92,7 +144,7 @@ Future<bool> nvencAvailable() async {
 /// [nvenc] should be the cached result from nvencAvailable().
 String _videoEncoder(bool nvenc) => nvenc ? 'h264_nvenc' : 'libx264';
 
-// ── Source colour / HDR probing ───────────────────────────────────────────────
+// Source colour / HDR probing
 
 /// Probe a source file's colour characteristics (bit-depth + HDR) so the UI can
 /// gate which output codecs are valid. Returns [InputColor.sdr8] on any failure.
@@ -177,7 +229,7 @@ Future<MediaStreams> probeMediaStreams(String input) async {
           'pix_fmt,color_transfer:stream_tags=language,title:stream_disposition=default',
       '-of', 'json', input,
       // ffprobe emits UTF-8; force UTF-8 decoding so track titles with accents
-      // (e.g. "Stéréo") are not mangled by the platform's default codepage.
+      // are not mangled by the platform's default codepage.
     ], stdoutEncoding: utf8).timeout(const Duration(seconds: 15));
     if (res.exitCode != 0) return const MediaStreams(color: InputColor.sdr8);
 
@@ -243,7 +295,7 @@ class _OutSpec {
   factory _OutSpec.from(VideoOutput out, InputColor input) {
     final hevc = out.isHevc;
     final hdr  = out.isHdr;
-    // H.264 → always 8-bit (10-bit SDR reduced 10→8). H.265 → keep input depth.
+    // H.264 -> always 8-bit (10-bit SDR reduced 10->8). H.265 -> keep input depth.
     final tenBit = hdr || (hevc && input.is10bit);
     return _OutSpec(hevc, tenBit, hdr);
   }
@@ -258,7 +310,7 @@ class _OutSpec {
 /// - h264_nvenc / hevc_nvenc on GPU; libx264 / libx265 on CPU.
 /// - [gpuFrames] true when frames are already in CUDA memory (DASH NVENC path),
 ///   where scale_cuda sets the pixel format; otherwise we set -pix_fmt here so
-///   10-bit is preserved and 10-bit-SDR→H.264 is reduced 10→8.
+///   10-bit is preserved and 10-bit-SDR->H.264 is reduced 10->8.
 int _kbpsOf(String br) => int.tryParse(br.replaceAll(RegExp(r'[^\d]'), '')) ?? 5000;
 
 String _scaledVideoBitrate(int anchor4kKbps, Preset r, bool hdr) =>
@@ -470,7 +522,7 @@ List<String> _filterComplexArgs(List<Preset> resolutions) {
 
 /// Build a scale filter for a single output rendition.
 /// Input is already cropped to exact 16:9 aspect ratio by the time
-/// this filter runs, so no padding needed — just scale down.
+/// this filter runs, so no padding needed - just scale down.
 /// force_divisible_by=2 ensures libx264 compatibility.
 String _scaleFilter(int i, Preset r) {
   return '[cropped]scale=${r.width}:${r.height}'
@@ -603,8 +655,7 @@ String _hlsVarStreamMapDual(List<String> names, List<AudioSelection> kept) {
   ].join(' ');
 }
 
-// ── HLS ───────────────────────────────────────────────────────────────────────
-
+// HLS
 /// Build the ffmpeg command for HLS encoding.
 /// Everything is written into <outputDir>/<stem>/ first;
 /// [promoteHlsMaster] moves the master playlist up afterwards.
@@ -626,7 +677,7 @@ List<String> buildHlsCmd({
   // Use forward slashes for all HLS output paths. ffmpeg derives the fMP4
   // init-segment directory by scanning the output path for '/', so on Windows
   // backslash paths it finds none, and the per-variant init segments are not
-  // written into segDir (they vanish / land in the CWD) — breaking playback and
+  // written into segDir (they vanish / land in the CWD) - breaking playback and
   // validation. Windows accepts '/' fine, so this works on both platforms.
   final segDir = '$outputDir/$stem'.replaceAll('\\', '/');
   final spec   = _OutSpec.from(output, inputColor);
@@ -1085,8 +1136,7 @@ Future<void> promoteHlsMaster({
   await srcMaster.delete();
 }
 
-// ── DASH ──────────────────────────────────────────────────────────────────────
-
+// DASH
 /// Build the ffmpeg command for DASH encoding.
 ///
 /// Stream index layout after mapping:
@@ -1142,7 +1192,7 @@ List<String> buildDashCmd({
   final List<String> cmd;
 
   if (nvenc) {
-    // ── NVENC path: per-stream mapping with scale_cuda + setsar ──────────────
+    // NVENC path: per-stream mapping with scale_cuda + setsar
     // Video uses -map 0:v:0 per output with -filter:v:N. Audio is muxed per
     // rendition (2.0.0) or mapped separately as alternate tracks (multi).
     final maps    = <String>[];
@@ -1177,7 +1227,7 @@ List<String> buildDashCmd({
       ...dashTail,
     ];
   } else {
-    // ── CPU path: filter graph with split → scale ────────────────────────────
+    // CPU path: filter graph with split -> scale
     final splitParts = List.generate(n, (i) => '[v$i]').join();
     final splitFilter = '[0:v]split=$n$splitParts';
     final scaleFilters = [

@@ -18,7 +18,7 @@ String _varStreamMap(List<String> cmd) => cmd[cmd.indexOf('-var_stream_map') + 1
 void main() {
   group('HLS multi-audio var_stream_map', () {
     test('exactly one default:yes when the source default track was removed', () {
-      // User plan: kept audio orders 1,3,5,11 — none flagged default (the
+      // User plan: kept audio orders 1,3,5,11 - none flagged default (the
       // source default, order 0, was removed in the Advanced tab).
       final plan = [
         AudioSelection(sourceOrder: 1, target: AudioTarget.eac3, channels: AudioChannelMode.source, language: 'eng'),
@@ -568,6 +568,32 @@ ${stem}_sdr_720p.m3u8
       expect('VIDEO-RANGE=PQ'.allMatches(out).length, 1);  // the hdr_ variant
       expect('VIDEO-RANGE=SDR'.allMatches(out).length, 1);  // the sdr_ variant
       await tmp.delete(recursive: true);
+    });
+  });
+
+  group('accent folding (3.3.1)', () {
+    test('foldAccents: simple fold for FR/DE/SV + ligatures', () {
+      expect(foldAccents('Am\u00e9lie'), 'Amelie');
+      expect(foldAccents('Fant\u00f4mas se D\u00e9cha\u00eene'), 'Fantomas se Dechaine');
+      expect(foldAccents('M\u00fcller'), 'Muller');   // umlaut = simple fold, not "ue"
+      expect(foldAccents('Malm\u00f6'), 'Malmo');
+      expect(foldAccents('Bj\u00f6rk'), 'Bjork');
+      expect(foldAccents('Stra\u00dfe'), 'Strasse');  // sharp-s -> ss (no base letter)
+      expect(foldAccents('\u00e7\u00e0 et l\u00e0'), 'ca et la');
+      expect(foldAccents('c\u0153ur'), 'coeur');       // oe ligature
+      expect(foldAccents('El Ni\u00f1o'), 'El Nino');
+      expect(foldAccents('ASCII stays 123-_'), 'ASCII stays 123-_');
+    });
+
+    test('stemFromName transliterates accents then makes URI-safe', () {
+      expect(stemFromName('Fant\u00f4mas se D\u00e9cha\u00eene (1966) [tmdbid-1873]'),
+          'Fantomas_se_Dechaine_1966_tmdbid-1873');
+      expect(stemFromName('Am\u00e9lie'), 'Amelie'); // was "Amlie" before the fix
+    });
+
+    test('safeFileName folds accents but keeps spaces/parens/brackets', () {
+      expect(safeFileName('Fant\u00f4mas se D\u00e9cha\u00eene (1966) [tmdbid-1873]'),
+          'Fantomas se Dechaine (1966) [tmdbid-1873]');
     });
   });
 }
